@@ -50,6 +50,10 @@ final class CompositeTransport: PeerTransport {
     }
 
     private func forwardReceived(_ message: PetMessage, from peer: String) {
+        // Only `.deliver` is de-duplicated: a duplicate delivery spawns a second
+        // visitor pet, whereas a duplicate `.ack` is already harmless -
+        // `Courier.receivedAck()` no-ops outside the `.away` phase and acks are
+        // id-correlated to a single outbound courier.
         if message.kind == .deliver {
             let now = Date()
             seenDeliveryIDs = seenDeliveryIDs.filter { now.timeIntervalSince($0.value) < 30 }

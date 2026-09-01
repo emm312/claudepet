@@ -157,4 +157,41 @@ mod tests {
         assert_eq!(back.text, "ship it");
         assert_eq!(back.exit_edge, Edge::Left);
     }
+
+    /// The cross-language wire contract. `json` below is exactly what the macOS
+    /// side's `Sources/ClaudePet/Net/LanUdpLink.swift` `LanWireMessage` encodes
+    /// (flat object, lowercase `kind`/`exitEdge`, dashed-uuid `id`, `sentAt` in
+    /// Unix seconds). If either side's shape drifts, one of the two test suites
+    /// breaks. This is the only Rust<->Swift guard available without a Mac build.
+    #[test]
+    fn wire_contract_matches_the_swift_lanwiremessage_shape() {
+        let json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"deliver","text":"ship it","senderName":"DeskMac","exitEdge":"left","sentAt":1700000000.5}"#;
+
+        let m: PetMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(m.id, "7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d");
+        assert_eq!(m.kind, Kind::Deliver);
+        assert_eq!(m.text, "ship it");
+        assert_eq!(m.sender_name, "DeskMac");
+        assert_eq!(m.exit_edge, Edge::Left);
+        assert_eq!(m.sent_at, 1_700_000_000.5);
+
+        // Our encoder emits fields in struct order == the shape above, verbatim,
+        // so the Mac's `JSONDecoder().decode(LanWireMessage.self, ...)` accepts it.
+        let same = PetMessage {
+            id: "7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d".into(),
+            kind: Kind::Deliver,
+            text: "ship it".into(),
+            sender_name: "DeskMac".into(),
+            exit_edge: Edge::Left,
+            sent_at: 1_700_000_000.5,
+        };
+        assert_eq!(serde_json::to_string(&same).unwrap(), json);
+
+        // ack shape (empty text, kind "ack", same id preserved).
+        let ack_json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25}"#;
+        let ack: PetMessage = serde_json::from_str(ack_json).unwrap();
+        assert_eq!(ack.kind, Kind::Ack);
+        assert!(ack.text.is_empty());
+        assert_eq!(ack.id, m.id);
+    }
 }

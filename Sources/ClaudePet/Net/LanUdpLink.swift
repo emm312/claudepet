@@ -44,6 +44,9 @@ final class LanUdpLink: PeerTransport {
     private func startListener() {
         do {
             let listener = try NWListener(using: .udp)
+            // Advertise over Bonjour. Apple documents setting `.service` before
+            // `start()`; if the Mac never shows up in the Windows peer list,
+            // switch to `NWListener(service:using:)` instead.
             listener.service = NWListener.Service(name: localName, type: Self.serviceType)
             listener.newConnectionHandler = { [weak self] connection in
                 connection.start(queue: .main)

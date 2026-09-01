@@ -70,6 +70,9 @@ src-win/                      ← the Windows port (Rust)
                               .swift + Net/PetMessage.swift
       mdns_udp.rs            MdnsUdpTransport: mdns-sd discovery of `_claudepet._udp.local.` +
                               JSON PetMessage datagrams over UDP — replaces Net/MultipeerLink.swift
+  installer/                  ← the install wizard (own crate, workspace member)
+    src/main.rs               claudepet-setup.exe: embeds the release claudepet.exe (include_bytes!)
+                              and runs a 4-page Win32 wizard; also `--silent` / `--uninstall`
 ```
 
 ## Coordinate system
@@ -94,11 +97,26 @@ messaging is **not** supported — the wire JSON is compatible but the transport
 From `src-win/`:
 
 ```
-cargo test                       # pure-logic unit tests (pet_state, brain, courier, sprites, ledges, net)
+cargo test                       # pure-logic + runtime unit tests (39)
 cargo run                        # debug run of the pet
 cargo build --release            # → target/release/claudepet.exe  (single file, no runtime deps)
 CLAUDEPET_PEER_NAME=DeskA cargo run   # second instance for local messaging tests
 ```
+
+### Installer
+
+```
+cargo build --release -p claudepet          # build the app first (installer embeds it)
+cargo build --release -p claudepet-setup    # → target/release/claudepet-setup.exe (~700 KB)
+```
+
+`claudepet-setup.exe` — per-user, no admin. GUI wizard (Welcome → options → progress → done), or
+`--silent` for an unattended install (Start-menu + desktop shortcuts, no autostart), or
+`--uninstall` (`--uninstall --silent` for scripted removal). Installs to
+`%LOCALAPPDATA%\Programs\ClaudePet`, registers in Add/Remove Programs, and leaves a copy of itself as
+`uninstall.exe`. `%APPDATA%\ClaudePet\state.json` (the pet's saved state) is intentionally kept on
+uninstall. The uninstaller resolves the install dir from the ARP `InstallLocation` value, never from
+its own path.
 
 Builds with `stable-x86_64-pc-windows-msvc` (the default on this machine). No Swift, no Xcode, and
 no Visual Studio *IDE* — but the MSVC target still needs a linker (`link.exe`), which comes from the

@@ -79,12 +79,18 @@ impl PetMessage {
     }
 }
 
-/// A random 32-hex-char id (a UUID-shaped correlation token; we only ever
-/// compare it for equality, never parse it).
+/// A random lowercase UUIDv4 string. Windows only ever compares it for equality,
+/// but the canonical `8-4-4-4-12` shape lets the macOS side round-trip it through
+/// Foundation's `UUID` without a lossy remap (see `Net/LanUdpLink.swift` on the
+/// windows branch).
 pub fn random_id() -> String {
-    let hi: u64 = rand::random();
-    let lo: u64 = rand::random();
-    format!("{hi:016x}{lo:016x}")
+    let mut b: [u8; 16] = rand::random();
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant 1
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
 }
 
 /// "How messages get to another machine nearby", so the pet/animation code never
@@ -115,6 +121,17 @@ mod tests {
     fn edge_opposite() {
         assert_eq!(Edge::Left.opposite(), Edge::Right);
         assert_eq!(Edge::Right.opposite(), Edge::Left);
+    }
+
+    #[test]
+    fn random_id_is_a_lowercase_dashed_uuid() {
+        let id = random_id();
+        assert_eq!(id.len(), 36);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase() || c == '-'));
+        assert_eq!(&id[14..15], "4"); // version nibble
+        assert_ne!(random_id(), random_id());
     }
 
     #[test]

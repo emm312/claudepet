@@ -14,8 +14,18 @@ git config remote.origin.push refs/heads/windows:refs/heads/windows
 ```
 
 so a bare `git push` can only ever update `origin/windows`. If you clone fresh, re-run that line and
-`git checkout windows` before doing anything else. Do not `git push origin main`, do not open PRs
-against `main`, do not edit anything under `Sources/`, `Tests/`, `Package.swift`, or `Scripts/`.
+`git checkout windows` before doing anything else. Do not `git push origin main` and do not open PRs
+against `main`.
+
+The Swift sources are upstream and stay that way **with one exception**: the cross-platform
+messaging interop. On this branch the macOS app also carries
+`Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`, and one line of
+`Runtime.swift` is changed to use them, so a macOS pet and a Windows pet can exchange letters over a
+wire-compatible UDP+Bonjour link. Nothing else under `Sources/`, `Tests/`, `Package.swift`, or
+`Scripts/` is touched, and none of it is ever pushed to `main`. **These three Swift changes have not
+been compiled** (no Swift toolchain on the Windows dev box) — run `swift build` / `swift test` on a
+Mac before relying on macOS↔Windows messaging, and note that Mac users must run the app built from
+*this* branch, not `main`, for interop.
 
 ---
 
@@ -89,8 +99,15 @@ MultipeerConnectivity has no Windows equivalent, so `net/mdns_udp.rs` is a fresh
 `mdns-sd` advertises/browses `_claudepet._udp.local.` on the LAN, and `PetMessage`s are JSON UDP
 datagrams to the peer's advertised address:port. Peer identity is the advertised instance name
 (matches how the Swift `PeerTransport` keys peers by display name). Override the local name with the
-`CLAUDEPET_PEER_NAME` env var to run two instances on one box. Cross-platform (macOS ↔ Windows)
-messaging is **not** supported — the wire JSON is compatible but the transports differ.
+`CLAUDEPET_PEER_NAME` env var to run two instances on one box.
+
+**macOS ↔ Windows messaging** works via the same link: the macOS app on this branch runs
+`CompositeTransport([MultipeerLink(), LanUdpLink()])`, where `LanUdpLink` speaks the identical
+Bonjour type (`_claudepet._udp`) and JSON shape. Wire format (both sides): a flat object
+`{ id, kind, text, senderName, exitEdge, sentAt }` — `id` a lowercase dashed UUID, `kind`
+`"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds. Mac↔Mac still rides
+MultipeerConnectivity; `CompositeTransport` de-dups deliveries by `id` so a peer reachable on both
+links isn't served twice.
 
 ## Build / run / test
 

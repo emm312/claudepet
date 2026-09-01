@@ -43,7 +43,9 @@ final class Runtime {
 
     // MARK: - Pet-to-pet messaging
 
-    private let transport: PeerTransport = MultipeerLink()
+    // windows-branch: MultipeerConnectivity for macOS<->macOS, plus a
+    // wire-compatible LAN UDP link for macOS<->Windows. See CLAUDE.md.
+    private let transport: PeerTransport = CompositeTransport([MultipeerLink(), LanUdpLink()])
 
     /// Active while the local pet is out delivering a message.
     private var outboundCourier: Courier?

@@ -54,7 +54,7 @@ final class Runtime {
     private var inboundCourier: Courier?
     private var visitor: VisitorPet?
     private var inboundMessage: PetMessage?
-    private var inboundBubbleShown = false
+    private var inboundWindowShown = false
 
     /// Deliveries that arrived while another was already playing out, so they
     /// hand off one at a time instead of stacking visitors.
@@ -169,6 +169,14 @@ final class Runtime {
         sendMessage(text, to: peer)
     }
 
+    /// Shows an arrived letter in the same letter-styled window used for
+    /// composing one, blocking (modally) until the reader taps "OK" or sends
+    /// a reply. Runs synchronously mid-tick, same as the compose flow.
+    private func presentIncomingMessage(_ message: PetMessage) {
+        guard let reply = LetterWindow(message: message).runModal() else { return }
+        sendMessage(reply.text, to: reply.peer)
+    }
+
     // MARK: - Actions (also used by the status bar menu)
 
     func feed() {
@@ -248,7 +256,7 @@ final class Runtime {
         let visitor = VisitorPet(zoom: zoom, y: window.frame.origin.y)
         visitor.setX(offScreenX)
         self.visitor = visitor
-        inboundBubbleShown = false
+        inboundWindowShown = false
         inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge)
     }
 
@@ -296,9 +304,9 @@ final class Runtime {
                 inboundCourier = nil
                 inboundMessage = nil
                 startNextDeliveryIfIdle()
-            } else if courier.phase == .handing, !inboundBubbleShown, let message = inboundMessage {
-                inboundBubbleShown = true
-                speechBubble?.show(text: message.text, above: window.frame, duration: Courier.handoffDuration)
+            } else if courier.phase == .handing, !inboundWindowShown, let message = inboundMessage {
+                inboundWindowShown = true
+                presentIncomingMessage(message)
             }
         }
 

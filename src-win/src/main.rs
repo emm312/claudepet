@@ -25,8 +25,11 @@ use runtime::{Runtime, ZOOM};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+/// Orange, premultiplied BGRA (opaque). ~ RGB(255, 138, 40).
+const BAR_COLOR: [u8; 4] = [40, 138, 255, 255];
 
 const TICK_TIMER_ID: usize = 1;
 const WM_APP_COMPOSE: u32 = WM_APP + 2;
@@ -39,6 +42,7 @@ struct App {
     tray: windows::Win32::UI::Shell::NOTIFYICONDATAW,
     fast: bool,
     mouse_down: bool,
+    bar_down: bool,
     moved: bool,
     down_pos: POINT,
 }
@@ -93,6 +97,7 @@ fn main() {
             tray,
             fast: false,
             mouse_down: false,
+            bar_down: false,
             moved: false,
             down_pos: POINT::default(),
         });
@@ -149,9 +154,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
 
             // Per-pixel hit test: only capture the mouse when it's over an
-            // opaque pet pixel (or a drag is in progress).
+            // opaque pet pixel, the orange bar, or a drag is in progress.
             let c = cursor_pos();
-            let over = app.runtime.is_dragging() || app.runtime.cursor_over_pet(c.x, c.y);
+            let over = app.runtime.is_dragging()
+                || app.bar_down
+                || app.runtime.cursor_over_bar(c.x, c.y)
+                || app.runtime.cursor_over_pet(c.x, c.y);
             app.window.set_click_through(!over);
 
             render_frame(app);
@@ -159,9 +167,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
 
         WM_LBUTTONDOWN => {
-            let app = &mut *app_ptr;
             let c = cursor_pos();
-            if app.runtime.cursor_over_pet(c.x, c.y) {
+            let shift = (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
+            let (over_bar, over_pet) = {
+                let app = &*app_ptr;
+                (
+                    app.runtime.cursor_over_bar(c.x, c.y),
+                    app.runtime.cursor_over_pet(c.x, c.y),
+                )
+            };
+            // Shift + click opens the same menu as a two-finger / right click.
+            if shift && (over_bar || over_pet) {
+                show_menu(app_ptr, hwnd);
+                return LRESULT(0);
+            }
+            let app = &mut *app_ptr;
+            if over_bar {
+                app.bar_down = true;
+                app.moved = false;
+                app.down_pos = c;
+                app.runtime.begin_bar_drag(c.x, c.y);
+                SetCapture(hwnd);
+            } else if over_pet {
                 app.mouse_down = true;
                 app.moved = false;
                 app.down_pos = c;
@@ -172,19 +199,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_MOUSEMOVE => {
             let app = &mut *app_ptr;
-            if app.mouse_down {
+            if app.mouse_down || app.bar_down {
                 let c = cursor_pos();
                 if (c.x - app.down_pos.x).abs() > 3 || (c.y - app.down_pos.y).abs() > 3 {
                     app.moved = true;
                 }
-                app.runtime.drag_to(c.x, c.y);
+                if app.bar_down {
+                    app.runtime.bar_drag_to(c.x, c.y);
+                } else {
+                    app.runtime.drag_to(c.x, c.y);
+                }
                 render_frame(app);
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             let app = &mut *app_ptr;
-            if app.mouse_down {
+            if app.bar_down {
+                app.bar_down = false;
+                let _ = ReleaseCapture();
+                app.runtime.end_bar_drag();
+                if !app.moved {
+                    app.runtime.toggle_dock();
+                }
+            } else if app.mouse_down {
                 app.mouse_down = false;
                 let _ = ReleaseCapture();
                 app.runtime.end_drag();
@@ -194,7 +232,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
-        WM_RBUTTONUP => {
+        WM_RBUTTONUP | WM_CONTEXTMENU => {
             show_menu(app_ptr, hwnd);
             LRESULT(0)
         }
@@ -272,6 +310,11 @@ fn render_frame(app: &mut App) {
     {
         let mut canvas = app.window.canvas();
         canvas.clear();
+
+        // The orange dock bar is always visible - it's the handle for docking /
+        // undocking the pet.
+        let (bx, by, bw, bh) = app.runtime.bar_rect();
+        canvas.fill_rect(bx, by, bw, bh, BAR_COLOR);
 
         if let Some(s) = app.runtime.pet_sprite() {
             if let Some(clip) = CLIPS.get(&s.anim) {

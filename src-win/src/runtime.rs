@@ -23,6 +23,14 @@ const LEDGE_REFRESH_INTERVAL: f64 = 0.5;
 const SAVE_INTERVAL: f64 = 20.0;
 const ANGRY_BUBBLE_INTERVAL: f64 = 3.5;
 
+/// The thin orange dock bar. Click it to send the pet "into" the bar (hidden);
+/// click again and it tumbles back onto the screen.
+pub const BAR_W: i32 = 4;
+pub const BAR_H: i32 = 90;
+const BAR_HIT_PAD: i32 = 8; // the bar is tiny - give clicks a bigger target
+const DOCK_IN_SECS: f64 = 0.30; // "jumps in" glide toward the bar
+const UNDOCK_KICK: f64 = 240.0; // px/s sideways shove on "tumbles out"
+
 /// What `main` needs to blit a sprite this frame.
 pub struct FrameSprite {
     pub x: i32,
@@ -57,6 +65,17 @@ pub struct Runtime {
     is_drag_active: bool,
     drag_off_x: f64,
     drag_off_y: f64,
+
+    // orange dock bar
+    bar_x: f64,
+    bar_y: f64,
+    docked: bool,
+    dock_in: Option<f64>, // Some(elapsed) while gliding into the bar
+    dock_in_from: (f64, f64),
+    undock_kick: f64, // decaying sideways velocity after tumbling out
+    bar_drag: bool,
+    bar_off_x: f64,
+    bar_off_y: f64,
 
     // pet-to-pet messaging
     outbound: Option<Courier>,
@@ -112,6 +131,15 @@ impl Runtime {
             is_drag_active: false,
             drag_off_x: 0.0,
             drag_off_y: 0.0,
+            bar_x: 6.0,
+            bar_y: 44.0,
+            docked: false,
+            dock_in: None,
+            dock_in_from: (0.0, 0.0),
+            undock_kick: 0.0,
+            bar_drag: false,
+            bar_off_x: 0.0,
+            bar_off_y: 0.0,
             outbound: None,
             outbound_msg_id: None,
             outbound_ack: false,
@@ -178,8 +206,17 @@ impl Runtime {
 
         let delivery_busy = self.tick_messaging(now, dt);
 
-        if !self.is_drag_active && !delivery_busy {
+        self.advance_dock(dt);
+
+        if !self.is_drag_active && !delivery_busy && !self.docked && self.dock_in.is_none() {
             self.apply_gravity(dt);
+            if self.undock_kick.abs() > 1.0 {
+                self.move_x(self.undock_kick * dt);
+                self.undock_kick *= 0.5_f64.powf(dt / 0.30); // ~0.30s half-life
+                if self.undock_kick.abs() <= 1.0 {
+                    self.undock_kick = 0.0;
+                }
+            }
             let dx = self.brain.tick(now, self.state.mood());
             if dx != 0.0 {
                 self.move_x(dx);
@@ -218,6 +255,32 @@ impl Runtime {
             AnimState::Walk | AnimState::Angry | AnimState::Fall | AnimState::Dance
         ) || self.outbound.is_some()
             || self.inbound.is_some()
+            || self.dock_in.is_some()
+            || self.undock_kick.abs() > 1.0
+    }
+
+    fn advance_dock(&mut self, dt: f64) {
+        let Some(elapsed) = self.dock_in else { return };
+        let e = elapsed + dt;
+        let f = (e / DOCK_IN_SECS).min(1.0);
+        let ease = f * f; // ease-in: the pet accelerates as it "jumps in"
+        let (tx, ty) = self.bar_pet_origin();
+        self.pet_x = self.dock_in_from.0 + (tx - self.dock_in_from.0) * ease;
+        self.pet_y = self.dock_in_from.1 + (ty - self.dock_in_from.1) * ease;
+        if f >= 1.0 {
+            self.dock_in = None;
+            self.docked = true;
+        } else {
+            self.dock_in = Some(e);
+        }
+    }
+
+    /// Pet top-left such that its centre sits on the bar's centre.
+    fn bar_pet_origin(&self) -> (f64, f64) {
+        (
+            self.bar_x + BAR_W as f64 / 2.0 - SPRITE_PX as f64 / 2.0,
+            self.bar_y + BAR_H as f64 / 2.0 - SPRITE_PX as f64 / 2.0,
+        )
     }
 
     pub fn peer_names(&self) -> &[String] {
@@ -271,6 +334,73 @@ impl Runtime {
 
     pub fn is_dragging(&self) -> bool {
         self.is_drag_active
+    }
+
+    // ---- orange dock bar --------------------------------------------
+
+    pub fn bar_rect(&self) -> (i32, i32, i32, i32) {
+        (self.bar_x.round() as i32, self.bar_y.round() as i32, BAR_W, BAR_H)
+    }
+
+    pub fn cursor_over_bar(&self, cx: i32, cy: i32) -> bool {
+        let (x, y, w, h) = self.bar_rect();
+        cx >= x - BAR_HIT_PAD
+            && cx <= x + w + BAR_HIT_PAD
+            && cy >= y - BAR_HIT_PAD
+            && cy <= y + h + BAR_HIT_PAD
+    }
+
+    /// Click the bar: send the pet gliding into it (then hidden); click again and
+    /// it tumbles back out onto the screen.
+    pub fn toggle_dock(&mut self) {
+        if self.docked || self.dock_in.is_some() {
+            self.undock();
+        } else {
+            self.dock_in = Some(0.0);
+            self.dock_in_from = (self.pet_x, self.pet_y);
+        }
+    }
+
+    fn undock(&mut self) {
+        self.docked = false;
+        self.dock_in = None;
+        let (tx, ty) = self.bar_pet_origin();
+        self.pet_x = tx;
+        self.pet_y = ty;
+        self.fall_velocity = 30.0;
+        let (sw, _) = geometry::primary_screen_size();
+        self.undock_kick = if self.bar_x + BAR_W as f64 / 2.0 <= sw as f64 / 2.0 {
+            UNDOCK_KICK
+        } else {
+            -UNDOCK_KICK
+        };
+        self.brain.set_falling(true);
+    }
+
+    pub fn begin_bar_drag(&mut self, cx: i32, cy: i32) {
+        self.bar_drag = true;
+        self.bar_off_x = cx as f64 - self.bar_x;
+        self.bar_off_y = cy as f64 - self.bar_y;
+    }
+
+    pub fn bar_drag_to(&mut self, cx: i32, cy: i32) {
+        if !self.bar_drag {
+            return;
+        }
+        let (sw, sh) = geometry::primary_screen_size();
+        self.bar_x = (cx as f64 - self.bar_off_x).clamp(0.0, (sw - BAR_W) as f64);
+        self.bar_y = (cy as f64 - self.bar_off_y).clamp(0.0, (sh - BAR_H) as f64);
+    }
+
+    pub fn end_bar_drag(&mut self) {
+        self.bar_drag = false;
+        // It's an edge widget - snap to whichever vertical screen edge is nearer.
+        let (sw, _) = geometry::primary_screen_size();
+        self.bar_x = if self.bar_x + BAR_W as f64 / 2.0 < sw as f64 / 2.0 {
+            6.0
+        } else {
+            (sw - BAR_W - 6) as f64
+        };
     }
 
     pub fn on_pet_click(&mut self) {
@@ -360,6 +490,10 @@ impl Runtime {
                 }
             }
             Kind::Deliver => {
+                // A letter's arriving - pop back out of the bar to receive it.
+                if self.docked || self.dock_in.is_some() {
+                    self.undock();
+                }
                 self.pending.push_back(message);
                 self.start_next_delivery_if_idle(now);
             }
@@ -530,8 +664,11 @@ impl Runtime {
     }
 
     /// The resident pet sprite for this frame, or `None` while it's off-screen
-    /// delivering.
+    /// delivering or fully docked in the orange bar.
     pub fn pet_sprite(&self) -> Option<FrameSprite> {
+        if self.docked {
+            return None;
+        }
         if self.outbound.as_ref().map_or(false, |c| c.is_away()) {
             return None;
         }

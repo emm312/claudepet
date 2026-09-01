@@ -17,6 +17,17 @@ impl Canvas<'_> {
         self.px.iter_mut().for_each(|b| *b = 0);
     }
 
+    /// Fill an axis-aligned rectangle with an opaque BGRA colour (clipped to the
+    /// canvas). Used for the orange dock bar.
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, bgra: [u8; 4]) {
+        for py in y.max(0)..(y + h).min(self.h) {
+            for px in x.max(0)..(x + w).min(self.w) {
+                let i = ((py * self.w + px) * 4) as usize;
+                self.px[i..i + 4].copy_from_slice(&bgra);
+            }
+        }
+    }
+
     #[inline]
     fn put(&mut self, x: i32, y: i32, bgra: [u8; 4]) {
         if x < 0 || y < 0 || x >= self.w || y >= self.h {

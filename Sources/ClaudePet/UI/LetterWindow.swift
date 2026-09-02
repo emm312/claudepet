@@ -29,9 +29,9 @@ private final class LetterCardView: NSView {
     }
 }
 
-/// A pill-shaped, filled button used for the primary "Send" action - the
-/// system `NSButton` bezel styles don't have anything this rounded, so it's
-/// drawn with a layer instead of relying on a bezel style.
+/// A pill-shaped, filled button used for the primary action - the system
+/// `NSButton` bezel styles don't have anything this rounded, so it's drawn
+/// with a layer instead of relying on a bezel style.
 private final class PillButton: NSButton {
     var fillColor: NSColor = LetterTheme.clay {
         didSet { layer?.backgroundColor = fillColor.cgColor }
@@ -54,41 +54,83 @@ private final class PillButton: NSButton {
     }
 }
 
-/// A borderless, letter-themed replacement for the system "Send a message"
-/// alert. Handles its own modal session so `MessageComposer` just needs to
-/// run it and read back the result.
+/// A borderless, letter-themed window used both to compose an outgoing
+/// message and to read one that just arrived - both are "a letter in an
+/// envelope", so they share one window class rather than a modal alert for
+/// reading and a bespoke panel for sending. `MessageComposer` and `Runtime`
+/// each just run it modally and read back the result.
 final class LetterWindow: NSWindow {
+    private enum Mode {
+        case compose
+        case read(PetMessage)
+    }
+
+    private let mode: Mode
     private let textView = PlaceholderTextView()
     private var peerPopup: NSPopUpButton?
     private let singlePeer: String?
     private var result: (text: String, peer: String)?
 
-    init(peerNames: [String]) {
-        let size = CGSize(width: 360, height: 300)
-        singlePeer = peerNames.count == 1 ? peerNames[0] : nil
+    /// Only meaningful in `.read` mode: whether the reader has switched the
+    /// panel over to composing a reply.
+    private var isReplying = false
 
+    private var titleLabel: NSTextField!
+    private var toLabel: NSTextField!
+    private var leftButton: NSButton!
+    private var rightButton: PillButton!
+
+    private static let size = CGSize(width: 360, height: 300)
+
+    /// Compose mode: presents a blank letter addressed to one of `peerNames`.
+    init(peerNames: [String]) {
+        mode = .compose
+        singlePeer = peerNames.count == 1 ? peerNames[0] : nil
         super.init(
-            contentRect: CGRect(origin: .zero, size: size),
+            contentRect: CGRect(origin: .zero, size: Self.size),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
+        configureWindow()
+        buildUI(peerNames: peerNames)
+    }
 
+    /// Read mode: presents an already-arrived `message`, read-only until the
+    /// reader taps "Reply".
+    init(message: PetMessage) {
+        mode = .read(message)
+        singlePeer = message.senderName
+        super.init(
+            contentRect: CGRect(origin: .zero, size: Self.size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        configureWindow()
+        buildUI(peerNames: [message.senderName])
+    }
+
+    private func configureWindow() {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
         level = .modalPanel
+    }
 
+    private func buildUI(peerNames: [String]) {
+        let size = Self.size
         let card = LetterCardView(frame: CGRect(origin: .zero, size: size))
         contentView = card
 
-        let title = NSTextField(labelWithString: "Send a Letter")
+        let title = NSTextField(labelWithString: "")
         title.font = NSFont(name: "Georgia-Bold", size: 18) ?? .boldSystemFont(ofSize: 18)
         title.textColor = LetterTheme.clay
         title.frame = CGRect(x: 22, y: size.height - 46, width: size.width - 44, height: 24)
         card.addSubview(title)
+        titleLabel = title
 
         let rule = NSBox(frame: CGRect(x: 22, y: size.height - 54, width: size.width - 44, height: 1))
         rule.boxType = .custom
@@ -97,20 +139,21 @@ final class LetterWindow: NSWindow {
         card.addSubview(rule)
 
         var toY = size.height - 80
-        let toLabel = NSTextField(labelWithString: "To:")
-        toLabel.font = NSFont(name: "Georgia", size: 13) ?? .systemFont(ofSize: 13)
-        toLabel.textColor = LetterTheme.inkFaint
-        toLabel.frame = CGRect(x: 22, y: toY, width: 28, height: 20)
-        card.addSubview(toLabel)
+        let to = NSTextField(labelWithString: "")
+        to.font = NSFont(name: "Georgia", size: 13) ?? .systemFont(ofSize: 13)
+        to.textColor = LetterTheme.inkFaint
+        to.frame = CGRect(x: 22, y: toY, width: 44, height: 20)
+        card.addSubview(to)
+        toLabel = to
 
         if let singlePeer {
             let peerLabel = NSTextField(labelWithString: singlePeer)
             peerLabel.font = NSFont(name: "Georgia-Italic", size: 13) ?? .systemFont(ofSize: 13)
             peerLabel.textColor = LetterTheme.ink
-            peerLabel.frame = CGRect(x: 48, y: toY, width: size.width - 70, height: 20)
+            peerLabel.frame = CGRect(x: 60, y: toY, width: size.width - 82, height: 20)
             card.addSubview(peerLabel)
         } else {
-            let popup = NSPopUpButton(frame: CGRect(x: 44, y: toY - 3, width: size.width - 66, height: 24), pullsDown: false)
+            let popup = NSPopUpButton(frame: CGRect(x: 56, y: toY - 3, width: size.width - 78, height: 24), pullsDown: false)
             popup.addItems(withTitles: peerNames)
             popup.isBordered = false
             (popup.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtCenter
@@ -134,7 +177,6 @@ final class LetterWindow: NSWindow {
         textView.drawsBackground = false
         textView.isRichText = false
         textView.textContainerInset = CGSize(width: 4, height: 6)
-        textView.placeholderString = "What's on your mind..."
         textView.placeholderColor = LetterTheme.inkFaint
         textView.frame = CGRect(origin: .zero, size: scroll.contentSize)
         textView.autoresizingMask = [.width]
@@ -145,23 +187,56 @@ final class LetterWindow: NSWindow {
         scroll.documentView = textView
         card.addSubview(scroll)
 
-        let cancel = NSButton(frame: CGRect(x: 20, y: 18, width: 70, height: 28))
-        cancel.title = "Cancel"
-        cancel.isBordered = false
-        cancel.font = .systemFont(ofSize: 13)
-        cancel.contentTintColor = LetterTheme.inkFaint
-        cancel.target = self
-        cancel.action = #selector(cancelTapped)
-        cancel.keyEquivalent = "\u{1b}" // Escape
-        card.addSubview(cancel)
+        let left = NSButton(frame: CGRect(x: 20, y: 18, width: 70, height: 28))
+        left.isBordered = false
+        left.font = .systemFont(ofSize: 13)
+        left.contentTintColor = LetterTheme.inkFaint
+        left.target = self
+        left.action = #selector(leftTapped)
+        left.keyEquivalent = "\u{1b}" // Escape
+        card.addSubview(left)
+        leftButton = left
 
-        let send = PillButton(frame: CGRect(x: size.width - 90, y: 14, width: 70, height: 34))
-        send.title = "Send"
-        send.target = self
-        send.action = #selector(sendTapped)
-        send.keyEquivalent = "\r"
-        send.keyEquivalentModifierMask = .command
-        card.addSubview(send)
+        let right = PillButton(frame: CGRect(x: size.width - 90, y: 14, width: 70, height: 34))
+        right.target = self
+        right.action = #selector(rightTapped)
+        right.keyEquivalent = "\r"
+        right.keyEquivalentModifierMask = .command
+        card.addSubview(right)
+        rightButton = right
+
+        switch mode {
+        case .compose:
+            textView.isEditable = true
+            textView.placeholderString = "What's on your mind..."
+        case .read(let message):
+            textView.string = message.text
+            textView.isEditable = false
+        }
+        refreshLabels()
+    }
+
+    private func refreshLabels() {
+        switch mode {
+        case .compose:
+            titleLabel.stringValue = "Send a Letter"
+            toLabel.stringValue = "To:"
+            leftButton.title = "Cancel"
+            rightButton.title = "Send"
+        case .read(let message):
+            if isReplying {
+                titleLabel.stringValue = "Send a Reply"
+                toLabel.stringValue = "To:"
+                leftButton.title = "Cancel"
+                rightButton.title = "Send"
+            } else {
+                titleLabel.stringValue = "A Letter Arrived"
+                toLabel.stringValue = "From:"
+                leftButton.title = "OK"
+                rightButton.title = "Reply"
+                _ = message // sender name is rendered by the peer label above
+            }
+        }
     }
 
     override var canBecomeKey: Bool { true }
@@ -169,31 +244,65 @@ final class LetterWindow: NSWindow {
 
     var firstResponderTarget: NSView { textView }
 
-    @objc private func sendTapped() {
+    @objc private func leftTapped() {
+        switch mode {
+        case .compose:
+            result = nil
+            NSApp.stopModal()
+        case .read:
+            if isReplying {
+                // Back out of composing a reply, restoring the original letter.
+                isReplying = false
+                if case .read(let message) = mode { textView.string = message.text }
+                textView.isEditable = false
+                refreshLabels()
+            } else {
+                result = nil
+                NSApp.stopModal()
+            }
+        }
+    }
+
+    @objc private func rightTapped() {
+        switch mode {
+        case .compose:
+            submitIfNonEmpty()
+        case .read:
+            if isReplying {
+                submitIfNonEmpty()
+            } else {
+                isReplying = true
+                textView.string = ""
+                textView.isEditable = true
+                textView.placeholderString = "Your reply..."
+                refreshLabels()
+                makeFirstResponder(firstResponderTarget)
+            }
+        }
+    }
+
+    private func submitIfNonEmpty() {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let peer = singlePeer ?? peerPopup?.titleOfSelectedItem
         if !text.isEmpty, let peer {
             result = (text, peer)
+            NSApp.stopModal()
         }
-        NSApp.stopModal()
-    }
-
-    @objc private func cancelTapped() {
-        result = nil
-        NSApp.stopModal()
     }
 
     override func cancelOperation(_ sender: Any?) {
-        cancelTapped()
+        leftTapped()
     }
 
-    /// Runs the modal session and returns whatever `sendTapped`/`cancelTapped`
-    /// recorded, mirroring `NSAlert.runModal`'s call shape.
+    /// Runs the modal session and returns whatever the reader/sender decided,
+    /// mirroring `NSAlert.runModal`'s call shape. `nil` means "closed without
+    /// sending" - either a cancelled compose, or a read letter dismissed with
+    /// "OK" and no reply.
     func runModal() -> (text: String, peer: String)? {
         NSApp.activate(ignoringOtherApps: true)
         center()
         makeKeyAndOrderFront(nil)
-        makeFirstResponder(firstResponderTarget)
+        if case .compose = mode { makeFirstResponder(firstResponderTarget) }
         NSApp.runModal(for: self)
         orderOut(nil)
         return result

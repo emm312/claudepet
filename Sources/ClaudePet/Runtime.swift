@@ -48,7 +48,10 @@ final class Runtime {
     /// Active while the local pet is out delivering a message.
     private var outboundCourier: Courier?
     private var outboundMessageID: UUID?
-    private var outboundAckReceived = false
+    /// Everyone this delivery was addressed to, and who has acked so far -
+    /// only meaningful while `outboundCourier` is active.
+    private var outboundPendingPeers: Set<String> = []
+    private var outboundAckedPeers: Set<String> = []
 
     /// Active while a visitor's sprite is walking through a handoff.
     private var inboundCourier: Courier?
@@ -165,8 +168,8 @@ final class Runtime {
     @objc private func menuSendMessage() { presentMessageComposer() }
 
     func presentMessageComposer() {
-        guard let (text, peer) = MessageComposer.present(peerNames: transport.peerNames) else { return }
-        sendMessage(text, to: peer)
+        guard let (text, peers) = MessageComposer.present(peerNames: transport.peerNames) else { return }
+        sendMessage(text, to: peers)
     }
 
     /// Shows an arrived letter in the same letter-styled window used for
@@ -174,7 +177,7 @@ final class Runtime {
     /// a reply. Runs synchronously mid-tick, same as the compose flow.
     private func presentIncomingMessage(_ message: PetMessage) {
         guard let reply = LetterWindow(message: message).runModal() else { return }
-        sendMessage(reply.text, to: reply.peer)
+        sendMessage(reply.text, to: reply.peers)
     }
 
     // MARK: - Actions (also used by the status bar menu)
@@ -205,11 +208,13 @@ final class Runtime {
 
     // MARK: - Pet-to-pet messaging
 
-    /// Sends `text` to `peer`: the local pet walks off screen, the peer's pet
-    /// shows it and hands back an ack, and this pet walks home. Ignored if the
-    /// pet is already out delivering something.
-    func sendMessage(_ text: String, to peer: String) {
-        guard outboundCourier == nil else { return }
+    /// Sends `text` to every peer in `peers` in one trip: the local pet walks
+    /// off screen, each peer's pet shows it and hands back an ack, and this
+    /// pet walks home once at least one ack (or the timeout) comes back.
+    /// Ignored if the pet is already out delivering something, or if `peers`
+    /// is empty.
+    func sendMessage(_ text: String, to peers: [String]) {
+        guard outboundCourier == nil, !peers.isEmpty else { return }
 
         let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
             ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -219,18 +224,21 @@ final class Runtime {
 
         let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: edge)
         outboundMessageID = message.id
-        outboundAckReceived = false
+        outboundPendingPeers = Set(peers)
+        outboundAckedPeers = []
         outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge)
         brain.setFalling(false)
         showBubble(force: Dialogue.departLine())
-        transport.send(message, to: peer)
+        for peer in peers {
+            transport.send(message, to: peer)
+        }
     }
 
     private func handleReceived(_ message: PetMessage, from peerName: String) {
         switch message.kind {
         case .ack:
             guard message.id == outboundMessageID else { return }
-            outboundAckReceived = true
+            outboundAckedPeers.insert(peerName)
             outboundCourier?.receivedAck()
         case .deliver:
             pendingDeliveries.append(message)
@@ -273,7 +281,7 @@ final class Runtime {
             case .departing, .returning:
                 if wasAway {
                     window.orderFrontRegardless() // just started walking back in
-                    if !outboundAckReceived { showBubble(force: Dialogue.deliveryFailedLine()) }
+                    if outboundAckedPeers.isEmpty { showBubble(force: Dialogue.deliveryFailedLine()) }
                 }
                 var origin = window.frame.origin
                 origin.x = courier.x

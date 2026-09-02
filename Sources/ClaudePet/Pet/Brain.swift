@@ -14,9 +14,9 @@ enum PetMood {
 /// annoying to have on screen all day.
 ///
 /// The one deliberate exception is `isDistracted`: while the user is watching
-/// Reels, the pet drops the "mostly holds still" bias entirely and sprints
-/// back and forth, because the whole point is to be annoying enough to get
-/// noticed.
+/// Reels, the Brain only picks the `.angry` sprite - actual movement (darting
+/// around the browser window) is owned by `Rampage`, driven separately by the
+/// Runtime, since the Brain has no notion of where that window is.
 final class Brain {
     private(set) var anim: PetMood.AnimState = .idle
     private(set) var facingRight = true
@@ -29,6 +29,9 @@ final class Brain {
     private let rng: () -> Double
 
     private static let walkSpeed: CGFloat = 1.2
+    /// Fallback sprint speed for when the pet is distracted but no `Rampage`
+    /// is driving it (the Accessibility read matched the URL but couldn't get
+    /// window geometry) - see `Runtime.applySighting`.
     private static let angrySpeed: CGFloat = 4.5
     private static let danceDuration: TimeInterval = 2.6
     private static let danceShimmyAmplitude: CGFloat = 6
@@ -97,6 +100,11 @@ final class Brain {
         }
 
         if isDistracted {
+            // Normally `Rampage` (driven by the Runtime) owns position while
+            // distracted and this dx is discarded - but if the Accessibility
+            // read couldn't get window geometry, there's no Rampage, and this
+            // sprint-in-place-along-the-ledge is the fallback so the pet still
+            // reacts visibly instead of just standing there looking angry.
             if now >= stateEndTime {
                 anim = .angry
                 facingRight.toggle() // dart back and forth rather than committing to one direction

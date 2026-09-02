@@ -6,7 +6,10 @@ final class Runtime {
     private(set) var state: PetState
     private let brain = Brain()
     private nonisolated let distractionDetector = DistractionDetector()
-    private var lastAngryBubbleDate: Date = .distantPast
+    private var rampage: Rampage?
+    /// Bubble cadence for the rare fallback path where the pet is distracted
+    /// but has no `Rampage` (no window geometry) - see `applySighting`.
+    private var lastFallbackAngryBubbleDate: Date = .distantPast
 
     private let zoom = 5
     private let window: OverlayWindow
@@ -420,7 +423,7 @@ final class Runtime {
     private func scheduleTick() {
         tickTimer?.invalidate()
         let isFastMotion = brain.anim == .walk || brain.anim == .angry || brain.anim == .fall || brain.anim == .dance
-            || outboundCourier != nil || inboundCourier != nil
+            || outboundCourier != nil || inboundCourier != nil || rampage != nil
         let interval: TimeInterval = isFastMotion ? (1.0 / 30.0) : (1.0 / 8.0)
         tickTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -457,23 +460,34 @@ final class Runtime {
         let deliveryBusy = tickMessaging(now: now, dt: dt)
 
         if !isDragActive && !deliveryBusy {
-            // Gravity first, so the Brain sees this tick's up-to-date isFalling
-            // flag (rather than lagging a frame behind) when it picks an anim.
-            applyGravity(dt: dt)
-            let dx = brain.tick(now: now, mood: state.mood)
-            if dx != 0 {
-                move(dx: dx)
+            if let rampage {
+                // Rampage owns position outright while active - no gravity,
+                // no ledges, it flies wherever the browser window is.
+                _ = brain.tick(now: now, mood: state.mood) // keeps anim == .angry current
+                let next = rampage.tick(now: now, dt: dt)
+                window.setFrameOrigin(ScreenGeometry.clampOrigin(next, size: window.frame.size))
+                if rampage.shouldSpeakNow(now: now) {
+                    showBubble(force: Dialogue.angryLine(tier: rampage.tier))
+                }
+            } else {
+                // Gravity first, so the Brain sees this tick's up-to-date
+                // isFalling flag (rather than lagging a frame behind) when it
+                // picks an anim.
+                applyGravity(dt: dt)
+                let dx = brain.tick(now: now, mood: state.mood)
+                if dx != 0 {
+                    move(dx: dx)
+                }
+                if brain.isDistracted, now.timeIntervalSince(lastFallbackAngryBubbleDate) > 3.5 {
+                    lastFallbackAngryBubbleDate = now
+                    showBubble(force: Dialogue.angryLine(tier: .furious))
+                }
             }
         }
 
         advanceFrame(dt: dt)
         view.updateHitTest()
         speechBubble?.follow(above: window.frame)
-
-        if brain.isDistracted, now.timeIntervalSince(lastAngryBubbleDate) > 3.5 {
-            lastAngryBubbleDate = now
-            showBubble(force: Dialogue.angryLine())
-        }
 
         if now.timeIntervalSince(lastSaveDate) > 20 {
             persistSoon()
@@ -485,18 +499,41 @@ final class Runtime {
     private func scheduleDistractionCheck() {
         Task.detached(priority: .background) { [weak self] in
             guard let self else { return }
-            let distracted = self.distractionDetector.currentlyDistracted()
+            let sighting = self.distractionDetector.currentSighting()
             await MainActor.run {
-                self.brain.setDistracted(distracted)
+                self.applySighting(sighting)
             }
             // Poll a bit faster while distracted so the pet reacts quickly once
             // the user leaves Reels; slower otherwise since this costs a real
-            // (if small) Apple Event round-trip in supported browsers.
-            let delay: UInt64 = distracted ? 1_000_000_000 : 2_500_000_000
+            // (if small) Accessibility round-trip in supported browsers.
+            let delay: UInt64 = sighting != nil ? 1_000_000_000 : 2_500_000_000
             try? await Task.sleep(nanoseconds: delay)
             await MainActor.run {
                 self.scheduleDistractionCheck()
             }
+        }
+    }
+
+    private func applySighting(_ sighting: DistractionSighting?) {
+        brain.setDistracted(sighting != nil)
+
+        guard let sighting else {
+            if rampage != nil {
+                rampage = nil
+                brain.setFalling(false) // let gravity settle it onto a ledge again
+            }
+            return
+        }
+
+        // No usable window geometry this poll (AX read failed transiently) -
+        // keep whatever rampage/frame we already have rather than tearing it
+        // down over one bad sample.
+        guard let frame = sighting.frame else { return }
+
+        if let rampage {
+            rampage.updateTarget(frame: frame)
+        } else {
+            rampage = Rampage(frame: frame, petSize: window.frame.size, currentPosition: window.frame.origin)
         }
     }
 
@@ -557,6 +594,7 @@ final class Runtime {
     }
 
     private var currentFacingRight: Bool {
+        if let rampage { return rampage.facingRight }
         guard let outboundCourier, outboundCourier.phase != .away else { return brain.facingRight }
         return outboundCourier.facingRight
     }

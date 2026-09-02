@@ -65,8 +65,27 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc code signing"
-codesign --force --deep --sign - "$APP_DIR"
+echo "==> Code signing"
+# A stable, non-ad-hoc identity keeps the app's designated requirement tied to
+# its bundle ID + certificate rather than its cdhash, so TCC grants (like the
+# Accessibility permission distraction detection needs) survive rebuilds
+# instead of silently expiring every time this script runs. Any free Apple ID
+# gets an "Apple Development" cert via Xcode - this needs no paid membership
+# and no entitlements/provisioning profile, since the app declares none.
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "    using identity: $CODESIGN_IDENTITY"
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+else
+    echo "    WARNING: no signing identity found (checked for 'Apple Development' /" >&2
+    echo "    'Developer ID Application' in 'security find-identity -v -p codesigning')." >&2
+    echo "    Falling back to ad-hoc signing - Accessibility permission will need" >&2
+    echo "    to be re-granted after every rebuild. Set up a free Apple ID signing" >&2
+    echo "    identity in Xcode, or set CODESIGN_IDENTITY, to fix this." >&2
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 
 echo "==> Done: $APP_DIR"
 echo "Run with: open \"$APP_DIR\""

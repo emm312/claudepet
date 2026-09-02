@@ -40,8 +40,7 @@ enum WindowLedges {
         guard let infoList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
-        ) as? [[String: AnyObject]],
-              let primaryHeight = NSScreen.screens.first?.frame.height
+        ) as? [[String: AnyObject]], !NSScreen.screens.isEmpty
         else {
             return fallbackLedges()
         }
@@ -52,14 +51,14 @@ enum WindowLedges {
         for info in infoList {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
                   let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
-                  let cgBounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+                  let cgBounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  cgBounds.width >= minWidth, cgBounds.height >= 10,
+                  // Top-left-origin CG coords -> AppKit's bottom-left-origin space.
+                  let appKitBounds = ScreenGeometry.appKitRect(fromTopLeft: cgBounds)
             else { continue }
 
-            guard cgBounds.width >= minWidth, cgBounds.height >= 10 else { continue }
-
-            // Top-left-origin CG coords -> AppKit's bottom-left-origin space.
-            let topY = primaryHeight - cgBounds.minY - shadowInset
-            let bottomY = primaryHeight - cgBounds.maxY
+            let topY = appKitBounds.maxY - shadowInset
+            let bottomY = appKitBounds.minY
             windows.append(WindowRect(minX: cgBounds.minX, maxX: cgBounds.maxX, topY: topY, bottomY: bottomY))
         }
 

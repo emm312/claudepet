@@ -31,7 +31,12 @@ pub enum Phase {
 
 const SPEED: f64 = 90.0; // pt/s - brisker than the normal idle walk
 pub const HANDOFF_DURATION: f64 = 2.2;
-const AWAY_TIMEOUT: f64 = 10.0;
+/// How long the outbound pet waits off-screen for an ack before circling back.
+/// 15s (not 10) so a slow discovery/address-fixup on the sender or a congested
+/// LAN doesn't fire the "message bounced" bubble for a message that actually
+/// got through - the ack only races a *successful* delivery, so the extra wait
+/// mostly costs a false-negative nothing.
+const AWAY_TIMEOUT: f64 = 15.0;
 const ARRIVAL_EPSILON: f64 = 2.0;
 
 pub struct Courier {
@@ -252,10 +257,13 @@ mod tests {
         c.tick(start + 3.0); // reaches edge -> Away, deadline now (start+3)+10
         assert_eq!(c.phase(), Phase::Away);
 
-        c.tick(start + 10.0); // not yet at the timeout
+        c.tick(start + 10.0); // not yet at the timeout (deadline = start+3+15)
         assert_eq!(c.phase(), Phase::Away);
 
-        c.tick(start + 14.0); // past the 10s wait, no ack ever received
+        c.tick(start + 14.0); // still inside the 15s wait
+        assert_eq!(c.phase(), Phase::Away);
+
+        c.tick(start + 19.0); // past the 15s wait, no ack ever received
         assert_eq!(c.phase(), Phase::Returning);
     }
 

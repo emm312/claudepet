@@ -45,7 +45,12 @@ final class Courier {
     static let expressSpeedMultiplier: CGFloat = 3.0
     private var effectiveSpeed: CGFloat { express ? Self.speed * Self.expressSpeedMultiplier : Self.speed }
     static let handoffDuration: TimeInterval = 2.2
-    static let awayTimeout: TimeInterval = 10
+    /// How long the outbound pet waits off-screen for an ack before circling
+    /// back. 15s (not 10) so a slow discovery/address-fixup on the sender or a
+    /// congested LAN doesn't fire the "message bounced" bubble for a message
+    /// that actually got through - the ack only races a *successful* delivery,
+    /// so the extra wait mostly costs a false-negative nothing.
+    static let awayTimeout: TimeInterval = 15
     private static let arrivalEpsilon: CGFloat = 2
 
     /// `.walk` while moving, `.idle` while paused (away, or mid handoff).

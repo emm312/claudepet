@@ -120,6 +120,9 @@ fn main() {
             DispatchMessageW(&msg);
         }
 
+        // Ensure the transport sent its mDNS GOODBYE even if none of the window
+        // messages above ran (e.g. the process was killed from Task Manager).
+        app.runtime.shutdown();
         KillTimer(hwnd, TICK_TIMER_ID).ok();
         tray::remove_tray_icon(&app.tray);
     }
@@ -170,6 +173,7 @@ unsafe fn apply_update(app_ptr: *mut App, hwnd: HWND) {
         return;
     };
     app.runtime.save_now();
+    app.runtime.shutdown();
     KillTimer(hwnd, TICK_TIMER_ID).ok();
     KillTimer(hwnd, UPDATE_APPLY_TIMER_ID).ok();
     tray::remove_tray_icon(&app.tray);
@@ -347,6 +351,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 tray::ID_QUIT => {
                     KillTimer(hwnd, TICK_TIMER_ID).ok();
                     tray::remove_tray_icon(&app.tray);
+                    app.runtime.shutdown();
                     PostQuitMessage(0);
                 }
                 _ => {}
@@ -375,7 +380,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
 
         WM_DESTROY => {
+            let app = &mut *app_ptr;
             KillTimer(hwnd, TICK_TIMER_ID).ok();
+            app.runtime.shutdown();
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -476,6 +483,7 @@ struct NullTransport;
 
 impl net::PeerTransport for NullTransport {
     fn start(&mut self) {}
+    fn stop(&mut self) {}
     fn local_name(&self) -> String {
         net::mdns_udp::local_display_name()
     }

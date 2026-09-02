@@ -105,6 +105,11 @@ pub trait PeerTransport: Send {
     /// Begin advertising/browsing for nearby peers. Safe to call once at startup.
     fn start(&mut self);
 
+    /// Stop advertising/browsing and disconnect from the LAN so peers see this
+    /// pet drop off promptly (sends an mDNS GOODBYE) instead of lingering in
+    /// their cache until the TTL expires. Safe to call once at shutdown.
+    fn stop(&mut self);
+
     /// This instance's own display name.
     fn local_name(&self) -> String;
 

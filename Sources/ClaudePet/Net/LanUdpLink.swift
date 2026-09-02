@@ -82,7 +82,13 @@ final class LanUdpLink: PeerTransport {
             // can't see that through Network.framework's un-isolated closure.
             MainActor.assumeIsolated {
                 if let data, let self {
-                    self.handle(data)
+                    // The message's source address isn't in the completion -
+                    // read it off the connection. Inbound datagrams are proof
+                    // the sender is alive and reachable *right now*, so
+                    // remember its endpoint for replies: covers the case where
+                    // Bonjour resolution never completed, or resolved to a
+                    // different address than the one traffic actually flows on.
+                    self.handle(data, from: connection.endpoint)
                 }
                 if error == nil {
                     self?.receiveLoop(on: connection)
@@ -93,10 +99,14 @@ final class LanUdpLink: PeerTransport {
         }
     }
 
-    private func handle(_ data: Data) {
+    private func handle(_ data: Data, from endpoint: NWEndpoint?) {
         guard let wire = try? JSONDecoder().decode(LanWireMessage.self, from: data),
               let message = wire.toPetMessage()
         else { return }
+        if let endpoint, endpoints[message.senderName] != endpoint {
+            endpoints[message.senderName] = endpoint
+            onPeersChanged?(peerNames)
+        }
         onReceive?(message, message.senderName)
     }
 
@@ -117,6 +127,29 @@ final class LanUdpLink: PeerTransport {
                 self.onPeersChanged?(self.peerNames)
             }
         }
+        browser.stateUpdateHandler = { [weak self] state in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch state {
+                case .failed, .cancelled:
+                    // A browser can die silently - wake-from-sleep, an
+                    // interface change, a transient failure - which freezes the
+                    // peer list at whatever it last saw and is the classic
+                    // "closed and reopened, never shows up again" cause.
+                    // Re-create it so passive discovery resumes. Only restart
+                    // if this is still the live instance: `stop()` cancels and
+                    // clears `self.browser`, and that shutdown `.cancelled`
+                    // must not spin the browser back up.
+                    guard self.browser === browser else { return }
+                    self.browser = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        self?.startBrowser()
+                    }
+                default:
+                    break
+                }
+            }
+        }
         browser.start(queue: .main)
         self.browser = browser
     }
@@ -125,7 +158,20 @@ final class LanUdpLink: PeerTransport {
 
     func send(_ message: PetMessage, to peerName: String) {
         guard let endpoint = endpoints[peerName] else {
-            NSLog("ClaudePet LanUdpLink: send to unknown peer \(peerName)")
+            // Unknown peer: the passive browse can lag reality (peer just
+            // relaunched, browser re-subscribing after a failure). Restart
+            // discovery once and retry after a beat before giving up -
+            // silently dropping here was the old behavior and produced
+            // messages that vanished with no bubble at all.
+            NSLog("ClaudePet LanUdpLink: send to unknown peer \(peerName) - restarting browse")
+            restartBrowserForRetry()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, self.endpoints[peerName] != nil else {
+                    NSLog("ClaudePet LanUdpLink: peer \(peerName) still unknown after browse restart")
+                    return
+                }
+                self.send(message, to: peerName)
+            }
             return
         }
         guard let data = try? JSONEncoder().encode(LanWireMessage(message)) else { return }
@@ -160,6 +206,12 @@ final class LanUdpLink: PeerTransport {
             }
         }
         connection.start(queue: .main)
+    }
+
+    private func restartBrowserForRetry() {
+        browser?.cancel()
+        browser = nil
+        startBrowser()
     }
 }
 

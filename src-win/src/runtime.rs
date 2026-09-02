@@ -490,6 +490,14 @@ impl Runtime {
         self.persist_now();
     }
 
+    /// Stop the transport so peers see this pet drop off the LAN promptly
+    /// (mDNS GOODBYE). Call right before the process exits - including the
+    /// update-relaunch path - so a quick quit-then-relaunch doesn't leave a
+    /// stale `_claudepet._udp` entry behind that hides the new instance.
+    pub fn shutdown(&mut self) {
+        self.transport.stop();
+    }
+
     /// Shown just before the app swaps itself for a downloaded update.
     pub fn announce_update(&mut self, version: &str) {
         let v = version.trim_start_matches('v');
@@ -863,6 +871,7 @@ mod tests {
 
     impl PeerTransport for FakeTransport {
         fn start(&mut self) {}
+        fn stop(&mut self) {}
         fn local_name(&self) -> String {
             "TestPet".into()
         }
@@ -936,13 +945,13 @@ mod tests {
         let mut rt = new_rt(&fake);
 
         rt.send_message_at("hello?", "PeerX", false, 1000.0);
-        rt.tick_at(1000.0 + FAR); // -> Away, deadline = (1000+FAR) + 10
+        rt.tick_at(1000.0 + FAR); // -> Away, deadline = (1000+FAR) + 15
         assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
 
         rt.tick_at(1000.0 + FAR + 5.0); // still waiting
         assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
 
-        rt.tick_at(1000.0 + FAR + 11.0); // past the 10s wait, no ack
+        rt.tick_at(1000.0 + FAR + 16.0); // past the 15s wait, no ack
         assert!(!rt.t_ack());
         let bubble = rt.bubble().map(|b| b.0.to_string()).expect("a bubble should be showing");
         assert!(

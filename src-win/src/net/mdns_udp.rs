@@ -12,7 +12,8 @@ use super::{PeerTransport, PetMessage};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use socket2::{Domain, Socket, Type};
 use std::collections::{HashMap, VecDeque};
-use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const SERVICE_TYPE: &str = "_claudepet._udp.local.";
@@ -24,6 +25,15 @@ pub struct MdnsUdpTransport {
     peers: Arc<Mutex<HashMap<String, SocketAddr>>>,
     inbox: Arc<Mutex<VecDeque<(PetMessage, String)>>>,
     mdns: Option<ServiceDaemon>,
+    /// Bumped by `rescan()`; the browse worker re-issues its own `browse()`
+    /// when it sees the generation change. mdns-sd keys queriers by service
+    /// type, so a second browse from anywhere else would *replace* the long
+    /// lived subscription - this counter lets an active re-scan refresh the
+    /// peer map without ever stealing it.
+    scan_generation: Arc<AtomicU64>,
+    /// Set by `stop()`; the browse worker polls this and exits promptly rather
+    /// than re-browsing forever against a shut-down daemon.
+    shutdown: Arc<AtomicBool>,
     started: bool,
 }
 
@@ -65,6 +75,8 @@ impl MdnsUdpTransport {
             peers: Arc::new(Mutex::new(HashMap::new())),
             inbox: Arc::new(Mutex::new(VecDeque::new())),
             mdns: None,
+            scan_generation: Arc::new(AtomicU64::new(0)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             started: false,
         })
     }
@@ -73,14 +85,24 @@ impl MdnsUdpTransport {
         let Ok(sock) = self.socket.try_clone() else {
             return;
         };
+        let peers = Arc::clone(&self.peers);
         let inbox = Arc::clone(&self.inbox);
         std::thread::spawn(move || {
             let mut buf = [0u8; 64 * 1024];
             loop {
                 match sock.recv_from(&mut buf) {
-                    Ok((n, _from)) => {
+                    Ok((n, from)) => {
                         if let Ok(msg) = serde_json::from_slice::<PetMessage>(&buf[..n]) {
                             let sender = msg.sender_name.clone();
+                            // Inbound datagrams are proof the sender is alive
+                            // and reachable *right now* - remember the source
+                            // address so replies (acks, follow-ups) go straight
+                            // to a working socket even if the mDNS SRV record
+                            // resolved to a different IP, or none at all (e.g.
+                            // a peer advertising only unscoped link-local v6).
+                            // `recv_from` fills in the scope id the OS used,
+                            // which mDNS resolution never provides.
+                            peers.lock().unwrap().insert(sender.clone(), from);
                             inbox.lock().unwrap().push_back((msg, sender));
                         }
                     }
@@ -119,40 +141,53 @@ impl MdnsUdpTransport {
 
         let peers = Arc::clone(&self.peers);
         let own_name = self.local_name.clone();
+        let scan_generation = Arc::clone(&self.scan_generation);
+        let shutdown = Arc::clone(&self.shutdown);
         let worker_mdns = mdns.clone();
         std::thread::spawn(move || {
-            // `mdns-sd` keys queriers by service type, so a one-shot `rescan()`
-            // browse transiently steals this subscription. Re-subscribe whenever
-            // the channel disconnects instead of letting discovery die on the
-            // first "Search for pets" click.
-            loop {
+            // This worker is the *sole* owner of the `_claudepet._udp` browse.
+            // mdns-sd keeps one querier per service type (`service_queriers`),
+            // so any other `browse()` - like the old one-shot rescan - replaces
+            // this subscription and kills passive discovery. `rescan()` only
+            // bumps `scan_generation`; when the worker sees the bump it re-issues
+            // its own browse, which re-sends the PTR query and replays the
+            // daemon's cache of known peers (`query_cache_for_service`), so a
+            // "Search for pets" click refreshes the map without stealing the slot.
+            let mut last_generation = scan_generation.load(Ordering::SeqCst);
+            while !shutdown.load(Ordering::SeqCst) {
                 let Ok(receiver) = worker_mdns.browse(SERVICE_TYPE) else {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                     continue;
                 };
-                while let Ok(event) = receiver.recv() {
-                    match event {
-                        ServiceEvent::ServiceResolved(info) => {
+                loop {
+                    match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+                        Ok(ServiceEvent::ServiceResolved(info)) => {
                             let name = instance_label(info.get_fullname());
                             if name == own_name {
                                 continue;
                             }
-                            let port = info.get_port();
-                            if let Some(ip) = info.get_addresses().iter().next() {
-                                let addr = SocketAddr::new(*ip, port);
+                            if let Some(addr) = pick_peer_addr(&info) {
                                 peers.lock().unwrap().insert(name, addr);
                             }
                         }
-                        ServiceEvent::ServiceRemoved(_ty, fullname) => {
+                        Ok(ServiceEvent::ServiceRemoved(_ty, fullname)) => {
                             let name = instance_label(&fullname);
                             peers.lock().unwrap().remove(&name);
                         }
-                        _ => {}
+                        Ok(_) => {}
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                        Err(flume::RecvTimeoutError::Timeout) => {
+                            // Nothing arrived in the poll window. If a rescan
+                            // bumped the generation, re-issue the browse so
+                            // the daemon replays its cache immediately.
+                            let generation = scan_generation.load(Ordering::SeqCst);
+                            if generation != last_generation {
+                                last_generation = generation;
+                                break;
+                            }
+                        }
                     }
                 }
-                // Disconnected: either a rescan stole the slot or the daemon is
-                // shutting down. Small backoff, then try to reclaim it.
-                std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
 
@@ -169,16 +204,62 @@ fn instance_label(fullname: &str) -> String {
         .to_string()
 }
 
+/// Pick the best reachable address for a resolved peer. IPv4 first - it travels
+/// fine through the dual-stack socket via the IPv4-mapped form `send()` uses.
+/// Among IPv6 candidates, skip link-local (fe80::/10) addresses: mDNS
+/// resolution never carries the interface scope id those need, so `send_to`
+/// fails with EINVAL. (A peer that only advertises such an address still ends
+/// up in the peer map the first time it sends *us* a datagram - `recv_from`
+/// does carry the scope id.) Prefer a non-link-local v6 as the fallback.
+fn pick_peer_addr(info: &ServiceInfo) -> Option<SocketAddr> {
+    let port = info.get_port();
+    let mut v6_fallback: Option<SocketAddr> = None;
+    for ip in info.get_addresses() {
+        match ip {
+            IpAddr::V4(_) => return Some(SocketAddr::new(*ip, port)),
+            IpAddr::V6(v6) => {
+                if !v6.is_unicast_link_local() && v6_fallback.is_none() {
+                    v6_fallback = Some(SocketAddr::new(*ip, port));
+                }
+            }
+        }
+    }
+    v6_fallback
+}
+
 impl PeerTransport for MdnsUdpTransport {
     fn start(&mut self) {
         if self.started {
             return;
         }
         self.started = true;
+        // Allow a stop() -> start() cycle (the shutdown flag is sticky by
+        // design so the old worker thread exits before a new daemon is spun up).
+        self.shutdown.store(false, Ordering::SeqCst);
         self.spawn_recv_thread();
         if let Err(e) = self.spawn_mdns_thread() {
             eprintln!("ClaudePet: mDNS discovery unavailable: {e}");
         }
+    }
+
+    fn stop(&mut self) {
+        if !self.started {
+            return;
+        }
+        self.started = false;
+        self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(mdns) = &self.mdns {
+            // Graceful GOODBYE so peers drop us from their mDNS cache
+            // immediately instead of holding the stale `_claudepet._udp` entry
+            // until the PTR TTL (~75 min) expires. Without this, a quick
+            // quit-then-relaunch leaves the same-named new instance invisible
+            // to peers whose cache still points at the dead one - the exact
+            // "closed it and it never shows up again" bug.
+            let fullname = format!("{}.{SERVICE_TYPE}", self.local_name);
+            let _ = mdns.unregister(&fullname);
+            let _ = mdns.shutdown();
+        }
+        self.mdns = None;
     }
 
     fn local_name(&self) -> String {
@@ -192,8 +273,21 @@ impl PeerTransport for MdnsUdpTransport {
     }
 
     fn send(&self, message: &PetMessage, to_peer: &str) {
+        // Unknown peer -> actively re-scan the LAN once and retry after a short
+        // delay. The passive browse can lag reality (peer just relaunched,
+        // worker between subscriptions), and a silent drop here was the old
+        // behavior - the message would vanish with no bubble and no retry. If
+        // the peer is still unknown after the retry we give up and let the
+        // courier's ack-timeout bubble tell the user.
+        if self.peers.lock().unwrap().get(to_peer).is_none() {
+            self.rescan();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
         let addr = self.peers.lock().unwrap().get(to_peer).copied();
-        let Some(addr) = addr else { return };
+        let Some(addr) = addr else {
+            eprintln!("ClaudePet: dropping message to unknown peer {to_peer}");
+            return;
+        };
         // The socket is IPv6-only at the API level (dual-stack via
         // IPV6_V6ONLY=false happens under the hood, but Rust's std still
         // requires the SocketAddr passed in to be V6) - map a resolved IPv4
@@ -208,7 +302,9 @@ impl PeerTransport for MdnsUdpTransport {
             v6 => v6,
         };
         if let Ok(bytes) = serde_json::to_vec(message) {
-            let _ = self.socket.send_to(&bytes, addr);
+            if let Err(e) = self.socket.send_to(&bytes, addr) {
+                eprintln!("ClaudePet: send to {to_peer} ({addr}) failed: {e}");
+            }
         }
     }
 
@@ -216,40 +312,15 @@ impl PeerTransport for MdnsUdpTransport {
         self.inbox.lock().unwrap().pop_front()
     }
 
-    /// Fire a fresh browse and fold whatever resolves in the next ~3s into the
-    /// peer map, then `stop_browse` to collapse the retransmission chains this
-    /// and prior rescans piled up. The background worker re-subscribes as soon
-    /// as it sees the channel drop, so passive discovery survives.
+    /// Ask the browse worker to refresh the peer map. mdns-sd keys queriers by
+    /// service type, so a direct `browse()` here would *replace* the worker's
+    /// long-lived subscription (and `stop_browse` would kill it entirely) -
+    /// that was the old bug where passive discovery died after the first
+    /// "Search for pets" click. Bumping the generation instead makes the worker
+    /// re-issue its own browse within ~500ms, which replays the daemon's cache
+    /// of known peers.
     fn rescan(&self) {
-        let Some(mdns) = self.mdns.clone() else { return };
-        let peers = Arc::clone(&self.peers);
-        let own = self.local_name.clone();
-        std::thread::spawn(move || {
-            let Ok(rx) = mdns.browse(SERVICE_TYPE) else { return };
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            while std::time::Instant::now() < deadline {
-                match rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                    Ok(ServiceEvent::ServiceResolved(info)) => {
-                        let name = instance_label(info.get_fullname());
-                        if name == own {
-                            continue;
-                        }
-                        if let Some(ip) = info.get_addresses().iter().next() {
-                            peers
-                                .lock()
-                                .unwrap()
-                                .insert(name, SocketAddr::new(*ip, info.get_port()));
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => {}
-                }
-            }
-            // Retire this one-shot browse so repeated "Search for pets" clicks
-            // don't stack registrations inside the daemon. The long-lived browse
-            // started in `start()` keeps its own handle and is unaffected.
-            let _ = mdns.stop_browse(SERVICE_TYPE);
-        });
+        self.scan_generation.fetch_add(1, Ordering::SeqCst);
     }
 }
 

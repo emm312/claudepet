@@ -36,12 +36,12 @@ struct CourierTests {
         courier.tick(now: start.addingTimeInterval(3)) // now .away
         #expect(courier.phase == .away)
 
-        // Not yet at the timeout.
-        courier.tick(now: start.addingTimeInterval(5))
+        // Not yet at the timeout (deadline is +3s + 15s away-timeout = +18s).
+        courier.tick(now: start.addingTimeInterval(14))
         #expect(courier.phase == .away)
 
-        // Past the 10s timeout, with no ack ever received.
-        courier.tick(now: start.addingTimeInterval(11))
+        // Past the 15s timeout, with no ack ever received.
+        courier.tick(now: start.addingTimeInterval(19))
         #expect(courier.phase == .returning)
     }
 

@@ -1,21 +1,11 @@
 # CLAUDE.md
 
-## ⚠️ Branch rule — read first
+## Branch history
 
-**All commits and pushes on this checkout go to the `windows` branch only. Never push to `main`.**
-
-`main` is the upstream **macOS** app (Swift / AppKit) and must not be modified from here. This
-branch (`windows`) adds a **Windows port in Rust** alongside the untouched Swift sources.
-
-A structural guard is already configured in this clone:
-
-```
-git config remote.origin.push refs/heads/windows:refs/heads/windows
-```
-
-so a bare `git push` can only ever update `origin/windows`. If you clone fresh, re-run that line and
-`git checkout windows` before doing anything else. Do not `git push origin main` and do not open PRs
-against `main`.
+This project started as a macOS-only app on `main` (Swift / AppKit). The `windows` branch added a
+Windows port in Rust (`src-win/`) alongside the Swift sources, plus a small macOS-side interop
+carve-out for cross-platform pet-to-pet messaging. `windows` has since been merged into `main`, so
+`main` now carries both platforms; there is no longer a push restriction separating the two branches.
 
 The Swift sources are upstream and stay that way **with one exception**: the cross-platform
 messaging interop, which has grown since this branch was cut. On this branch the macOS app also

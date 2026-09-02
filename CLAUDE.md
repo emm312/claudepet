@@ -18,16 +18,38 @@ so a bare `git push` can only ever update `origin/windows`. If you clone fresh, 
 against `main`.
 
 The Swift sources are upstream and stay that way **with one exception**: the cross-platform
-messaging interop. On this branch the macOS app also carries
-`Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift` changes
-one line to use them; and `Net/PetMessage.swift` gains an optional-decoded `express` field so the
-horse/express flag survives the round trip. Nothing else under `Sources/`, `Tests/`, `Package.swift`,
-or `Scripts/` is touched, and none of it is ever pushed to `main`. **These Swift changes have not
-been compiled** (no Swift toolchain on the Windows dev box) — run `swift build` / `swift test` on a
-Mac before relying on macOS↔Windows messaging, and note that Mac users must run the app built from
-*this* branch, not `main`, for interop. The Mac side does **not** yet render the horse/mail on its
-visitor pet or expose an express toggle in its composer — that's follow-up work needing a Mac build;
-the Windows↔Windows experience is complete.
+messaging interop, which has grown since this branch was cut. On this branch the macOS app also
+carries `Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift`
+uses them (`CompositeTransport([MultipeerLink(), LanUdpLink()])`); `Net/PetMessage.swift` gains an
+optional-decoded `express` field so the horse/express flag survives the round trip; and
+`Overlay/CourierProp.swift` + `Pet/CourierProps.swift` add the horse/mail rendering (see below).
+Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched, and none of it is ever pushed
+to `main`.
+
+This carve-out was cut from `main` before three commits landed there (`dc69ae9` incoming-message
+letter window, `ba30cfd` multi-recipient sends, `171fe15` the flaky-discovery fix); all three have
+since been cherry-picked onto `windows` so the interop carve-out doesn't regress behind upstream.
+`PeerTransport.stop()`, `CompositeTransport.stop()`, and `LanUdpLink.stop()` all exist for the same
+reason `MultipeerLink.stop()` does — a clean goodbye on quit so a quick relaunch doesn't see a stale
+peer.
+
+**Mac-side horse/mail rendering**: `Pet/CourierProps.swift` bakes `horse.jpg`/`mail.jpg` (base64,
+embedded directly in Swift source — no bundle resources or SwiftPM resource pipeline) into
+chroma-keyed, cropped, nearest-resized RGBA `CGImage`s at first use, replicating what
+`src-win/build.rs` does at compile time. `Overlay/CourierProp.swift` is a small click-through
+overlay window (mirrors `VisitorPet`'s setup) that shows one baked image; `Runtime.swift` positions
+one horse + one mail prop alongside the resident pet while it's out on an express delivery, and
+another pair alongside the visitor while it's delivering one in — the visitor rides the horse
+whenever `PetMessage.express` is true, matching `src-win/src/runtime.rs`'s `on_horse` logic. Unlike
+the Windows port (one composited canvas via `main::draw_actor`), each prop is its own small window,
+since this app draws every pet/visitor as a separate `OverlayWindow` — positions approximate, not
+pixel-identical to, the Rust placement math. `LetterWindow`/`MessageComposer` now carry the express
+checkbox (`compose.rs`'s Mac-side counterpart) so both directions can send/receive express.
+
+**These Swift changes have not been compiled** as of this note (no Swift toolchain on the Windows
+dev box, and the latest round wasn't verified with `swift build`/`swift test` before committing) —
+run both on a Mac before relying on macOS↔Windows messaging or the horse/mail rendering, and note
+that Mac users must run the app built from *this* branch, not `main`, for interop.
 
 ---
 

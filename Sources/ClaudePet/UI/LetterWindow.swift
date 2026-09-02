@@ -71,7 +71,8 @@ final class LetterWindow: NSWindow {
     /// than one nearby - letting a letter go out to several at once.
     private var peerCheckboxes: [NSButton] = []
     private let singlePeer: String?
-    private var result: (text: String, peers: [String])?
+    private var expressCheckbox: NSButton!
+    private var result: (text: String, peers: [String], express: Bool)?
 
     /// Only meaningful in `.read` mode: whether the reader has switched the
     /// panel over to composing a reply.
@@ -177,6 +178,19 @@ final class LetterWindow: NSWindow {
             }
             toY = y - 2
         }
+
+        // windows-branch feature: send this one by horse, riding faster and
+        // showing the horse/mail props on both ends. See CourierProps.swift.
+        let expressFont = NSFont(name: "Georgia-Italic", size: 12) ?? .systemFont(ofSize: 12)
+        let express = NSButton(checkboxWithTitle: "Send by horse (express) \u{1F40E}", target: nil, action: nil)
+        express.attributedTitle = NSAttributedString(
+            string: "Send by horse (express) \u{1F40E}",
+            attributes: [.font: expressFont, .foregroundColor: LetterTheme.inkFaint]
+        )
+        express.frame = CGRect(x: 20, y: toY - 24, width: size.width - 40, height: Self.peerRowHeight)
+        card.addSubview(express)
+        expressCheckbox = express
+        toY -= 26
 
         let scroll = NSScrollView(frame: CGRect(x: 20, y: 56, width: size.width - 40, height: toY - 66))
         scroll.hasVerticalScroller = true
@@ -297,7 +311,7 @@ final class LetterWindow: NSWindow {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let peers = singlePeer.map { [$0] } ?? peerCheckboxes.filter { $0.state == .on }.map(\.title)
         if !text.isEmpty, !peers.isEmpty {
-            result = (text, peers)
+            result = (text, peers, expressCheckbox.state == .on)
             NSApp.stopModal()
         }
     }
@@ -310,7 +324,7 @@ final class LetterWindow: NSWindow {
     /// mirroring `NSAlert.runModal`'s call shape. `nil` means "closed without
     /// sending" - either a cancelled compose, or a read letter dismissed with
     /// "OK" and no reply.
-    func runModal() -> (text: String, peers: [String])? {
+    func runModal() -> (text: String, peers: [String], express: Bool)? {
         NSApp.activate(ignoringOtherApps: true)
         center()
         makeKeyAndOrderFront(nil)

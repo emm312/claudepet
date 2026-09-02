@@ -39,6 +39,17 @@ final class LanUdpLink: PeerTransport {
         startBrowser()
     }
 
+    /// Tears down the listener/browser so this pet drops off the Bonjour
+    /// browse promptly instead of lingering until the peer's cache expires -
+    /// same rationale as `MultipeerLink.stop()`, mirrored here for the LAN
+    /// link.
+    func stop() {
+        browser?.cancel()
+        browser = nil
+        listener?.cancel()
+        listener = nil
+    }
+
     // MARK: - Inbound
 
     private func startListener() {
@@ -50,7 +61,12 @@ final class LanUdpLink: PeerTransport {
             listener.service = NWListener.Service(name: localName, type: Self.serviceType)
             listener.newConnectionHandler = { [weak self] connection in
                 connection.start(queue: .main)
-                self?.receiveLoop(on: connection)
+                // Network.framework doesn't statically know this closure runs
+                // on the main queue; assert what's already true at runtime
+                // rather than hopping with `Task` and losing callback ordering.
+                MainActor.assumeIsolated {
+                    self?.receiveLoop(on: connection)
+                }
             }
             listener.start(queue: .main)
             self.listener = listener
@@ -61,13 +77,18 @@ final class LanUdpLink: PeerTransport {
 
     private func receiveLoop(on connection: NWConnection) {
         connection.receiveMessage { [weak self] data, _, _, error in
-            if let data, let self {
-                self.handle(data)
-            }
-            if error == nil {
-                self?.receiveLoop(on: connection)
-            } else {
-                connection.cancel()
+            // Same rationale as `newConnectionHandler`: this fires on the
+            // `.main` queue the connection was started with, but the compiler
+            // can't see that through Network.framework's un-isolated closure.
+            MainActor.assumeIsolated {
+                if let data, let self {
+                    self.handle(data)
+                }
+                if error == nil {
+                    self?.receiveLoop(on: connection)
+                } else {
+                    connection.cancel()
+                }
             }
         }
     }
@@ -84,15 +105,17 @@ final class LanUdpLink: PeerTransport {
     private func startBrowser() {
         let browser = NWBrowser(for: .bonjour(type: Self.serviceType, domain: nil), using: .udp)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let self else { return }
-            var map: [String: NWEndpoint] = [:]
-            for result in results {
-                if case let .service(name, _, _, _) = result.endpoint {
-                    map[name] = result.endpoint
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                var map: [String: NWEndpoint] = [:]
+                for result in results {
+                    if case let .service(name, _, _, _) = result.endpoint {
+                        map[name] = result.endpoint
+                    }
                 }
+                self.endpoints = map
+                self.onPeersChanged?(self.peerNames)
             }
-            self.endpoints = map
-            self.onPeersChanged?(self.peerNames)
         }
         browser.start(queue: .main)
         self.browser = browser

@@ -45,6 +45,10 @@ final class CompositeTransport: PeerTransport {
         links.forEach { $0.start() }
     }
 
+    func stop() {
+        links.forEach { $0.stop() }
+    }
+
     func send(_ message: PetMessage, to peerName: String) {
         links.forEach { $0.send(message, to: peerName) }
     }

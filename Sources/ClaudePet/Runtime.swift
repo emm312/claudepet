@@ -53,6 +53,13 @@ final class Runtime {
     /// Active while the local pet is out delivering a message.
     private var outboundCourier: Courier?
     private var outboundMessageID: UUID?
+    /// The message + recipients queued for this delivery. Held rather than
+    /// sent immediately - `tickMessaging` fires it once the courier actually
+    /// clears the screen (`.away`), so a peer can't ack back before the local
+    /// state machine is ready to act on it (see `Courier.receivedAck()`'s
+    /// `.away`-only guard).
+    private var outboundMessage: PetMessage?
+    private var outboundRecipients: [String] = []
     /// Everyone this delivery was addressed to, and who has acked so far -
     /// only meaningful while `outboundCourier` is active.
     private var outboundPendingPeers: Set<String> = []
@@ -248,6 +255,8 @@ final class Runtime {
 
         let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: edge, express: express)
         outboundMessageID = message.id
+        outboundMessage = message
+        outboundRecipients = peers
         outboundPendingPeers = Set(peers)
         outboundAckedPeers = []
         outboundExpress = express
@@ -255,9 +264,6 @@ final class Runtime {
         outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: express)
         brain.setFalling(false)
         showBubble(force: express ? "saddling up - taking this one express" : Dialogue.departLine())
-        for peer in peers {
-            transport.send(message, to: peer)
-        }
     }
 
     private func handleReceived(_ message: PetMessage, from peerName: String) {
@@ -317,7 +323,18 @@ final class Runtime {
                 window.setFrameOrigin(origin)
                 suppressLocalMovement = true
             case .away:
-                if !wasAway { window.orderOut(nil) } // just finished walking off screen
+                if !wasAway {
+                    window.orderOut(nil) // just finished walking off screen
+                    // Only send once the pet has actually left the screen -
+                    // sending at compose time let a fast LAN ack race back
+                    // before the courier reached `.away`, and `receivedAck()`
+                    // silently ignores acks outside that phase.
+                    if let message = outboundMessage {
+                        for peer in outboundRecipients {
+                            transport.send(message, to: peer)
+                        }
+                    }
+                }
                 suppressLocalMovement = true
             case .done:
                 // Land exactly on the ground the trip started from, undoing
@@ -325,6 +342,8 @@ final class Runtime {
                 window.setFrameOrigin(CGPoint(x: courier.x, y: outboundGroundY))
                 outboundCourier = nil
                 outboundMessageID = nil
+                outboundMessage = nil
+                outboundRecipients = []
                 brain.setFalling(false)
             default:
                 break

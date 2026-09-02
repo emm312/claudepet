@@ -16,6 +16,9 @@ enum Palette {
         1: NSColor(calibratedRed: 0.776, green: 0.455, blue: 0.345, alpha: 1), // body
         2: NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.078, alpha: 1), // eyes
         3: NSColor(calibratedRed: 0.808, green: 0.282, blue: 0.235, alpha: 1), // angry body tint
+        4: NSColor(calibratedRed: 0.541, green: 0.361, blue: 0.220, alpha: 1), // horse body (Pet/HorseSprite.swift)
+        5: NSColor(calibratedRed: 0.216, green: 0.137, blue: 0.086, alpha: 1), // horse mane/tail/hooves; mail flap line
+        6: NSColor(calibratedRed: 0.965, green: 0.941, blue: 0.898, alpha: 1), // mail envelope (Pet/MailSprite.swift)
     ]
 }
 

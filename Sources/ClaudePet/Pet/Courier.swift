@@ -42,7 +42,7 @@ final class Courier {
     private var lastTickDate: Date
 
     private static let speed: CGFloat = 90 // pt/s - brisker than the normal idle walk
-    static let expressSpeedMultiplier: CGFloat = 1.9
+    static let expressSpeedMultiplier: CGFloat = 3.0
     private var effectiveSpeed: CGFloat { express ? Self.speed * Self.expressSpeedMultiplier : Self.speed }
     static let handoffDuration: TimeInterval = 2.2
     static let awayTimeout: TimeInterval = 10

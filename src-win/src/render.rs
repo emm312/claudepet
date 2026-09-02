@@ -39,43 +39,6 @@ impl Canvas<'_> {
         self.px[i..i + 4].copy_from_slice(&bgra);
     }
 
-    /// Blit a premultiplied-BGRA sprite (`src_w` x `src_h`) at `dest`, each
-    /// source pixel expanded to a `scale` x `scale` block, optionally mirrored.
-    /// Fully-transparent source pixels are skipped; everything else overwrites.
-    #[allow(clippy::too_many_arguments)]
-    pub fn blit_rgba(
-        &mut self,
-        src: &[u8],
-        src_w: i32,
-        src_h: i32,
-        dest_x: i32,
-        dest_y: i32,
-        scale: i32,
-        flip_h: bool,
-    ) {
-        let out_w = src_w * scale;
-        for sy in 0..src_h {
-            for sx in 0..src_w {
-                let i = ((sy * src_w + sx) * 4) as usize;
-                if i + 4 > src.len() || src[i + 3] == 0 {
-                    continue;
-                }
-                let bgra = [src[i], src[i + 1], src[i + 2], src[i + 3]];
-                for zy in 0..scale {
-                    for zx in 0..scale {
-                        let local_x = sx * scale + zx;
-                        let px = if flip_h {
-                            dest_x + (out_w - 1 - local_x)
-                        } else {
-                            dest_x + local_x
-                        };
-                        self.put(px, dest_y + sy * scale + zy, bgra);
-                    }
-                }
-            }
-        }
-    }
-
     /// Blit a 16x16-ish palette-index grid at `dest`, each source pixel expanded
     /// to a `zoom` x `zoom` block. `flip_h` mirrors horizontally.
     pub fn blit_grid(

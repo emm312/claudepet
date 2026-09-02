@@ -12,9 +12,9 @@ messaging interop, which has grown since this branch was cut. On this branch the
 carries `Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift`
 uses them (`CompositeTransport([MultipeerLink(), LanUdpLink()])`); `Net/PetMessage.swift` gains an
 optional-decoded `express` field so the horse/express flag survives the round trip; and
-`Overlay/CourierProp.swift` + `Pet/CourierProps.swift` add the horse/mail rendering (see below).
-Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched, and none of it is ever pushed
-to `main`.
+`Overlay/CourierProp.swift` + `Pet/HorseSprite.swift` + `Pet/MailSprite.swift` add the horse/mail
+rendering (see below). Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched, and
+none of it is ever pushed to `main`.
 
 This carve-out was cut from `main` before three commits landed there (`dc69ae9` incoming-message
 letter window, `ba30cfd` multi-recipient sends, `171fe15` the flaky-discovery fix); all three have
@@ -23,23 +23,47 @@ since been cherry-picked onto `windows` so the interop carve-out doesn't regress
 reason `MultipeerLink.stop()` does — a clean goodbye on quit so a quick relaunch doesn't see a stale
 peer.
 
-**Mac-side horse/mail rendering**: `Pet/CourierProps.swift` bakes `horse.jpg`/`mail.jpg` (base64,
-embedded directly in Swift source — no bundle resources or SwiftPM resource pipeline) into
-chroma-keyed, cropped, nearest-resized RGBA `CGImage`s at first use, replicating what
-`src-win/build.rs` does at compile time. `Overlay/CourierProp.swift` is a small click-through
-overlay window (mirrors `VisitorPet`'s setup) that shows one baked image; `Runtime.swift` positions
-one horse + one mail prop alongside the resident pet while it's out on an express delivery, and
-another pair alongside the visitor while it's delivering one in — the visitor rides the horse
-whenever `PetMessage.express` is true, matching `src-win/src/runtime.rs`'s `on_horse` logic. Unlike
-the Windows port (one composited canvas via `main::draw_actor`), each prop is its own small window,
-since this app draws every pet/visitor as a separate `OverlayWindow` — positions approximate, not
-pixel-identical to, the Rust placement math. `LetterWindow`/`MessageComposer` now carry the express
-checkbox (`compose.rs`'s Mac-side counterpart) so both directions can send/receive express.
+**Horse/mail rendering — pixel art on both platforms, no JPEGs.** The horse and mail used to be baked
+from `horse.jpg`/`mail.jpg` (chroma-keyed and cropped at build time). Both platforms have since
+switched to hand-authored pixel grids in the same style as the pet's own sprites, and `horse.jpg`/
+`mail.jpg` have been deleted along with every baking step:
 
-**These Swift changes have not been compiled** as of this note (no Swift toolchain on the Windows
-dev box, and the latest round wasn't verified with `swift build`/`swift test` before committing) —
-run both on a Mac before relying on macOS↔Windows messaging or the horse/mail rendering, and note
-that Mac users must run the app built from *this* branch, not `main`, for interop.
+- **Swift**: `Pet/HorseSprite.swift` and `Pet/MailSprite.swift` author the horse and mail as pixel
+  grids (flat color blocks via the shared `Palette`/`PixelArtRenderer`, `.` = transparent), consistent
+  with `Pet/Sprites.swift`. The horse has a 2-frame gallop cycle (`HorseSprite.frames`/
+  `frameDuration`, drawn at the pet's own `zoom`); the mail is a single static envelope (drawn at a
+  smaller zoom of 2 - at the pet's zoom of 5 it would render almost as big as the pet itself).
+  `Overlay/CourierProp.swift` is a small click-through overlay window (mirrors `VisitorPet`'s setup)
+  that plays one prop's frames.
+- **Rust**: `pet/sprites.rs` carries the identical grids (`HORSE_FRAMES`/`HORSE_FRAME_DURATION`,
+  `MAIL_GRID`), rendered with the existing `Canvas::blit_grid` (the same palette-index renderer the
+  pet's own sprites use) instead of the old RGBA `Canvas::blit_rgba`. `props.rs`, `build.rs`, and the
+  `image` build-dependency are gone entirely - nothing decodes a JPEG anymore. `main.rs::draw_actor`
+  picks a gallop frame from the wall clock (`current_horse_frame()` in `runtime.rs`) since the
+  poll-based render loop has no dedicated animation-frame state to thread through.
+
+Both platforms lift the pet above its normal ground position while it's on the horse's back
+(`HorseSprite.riderLift` in Swift, the existing `pet_y - 16` in `main::draw_actor` on Rust) so it
+reads as sitting on top rather than overlapping the horse at the same height. On the Swift side this
+is a real (if temporary) move of the resident/visitor's actual window position, restored to the exact
+pre-trip ground height the instant the courier finishes (`outboundGroundY` in `Runtime.swift`) so
+gravity resumes correctly - not just a rendering offset.
+
+`Runtime.swift` positions one horse + one mail prop alongside the resident pet while it's out on an
+express delivery, and another pair alongside the visitor while it's delivering one in — the visitor
+rides the horse whenever `PetMessage.express` is true, matching `src-win/src/runtime.rs`'s `on_horse`
+logic. Unlike the Windows port (one composited canvas via `main::draw_actor`), each Swift prop is its
+own small window, since this app draws every pet/visitor as a separate `OverlayWindow` — positions
+approximate, not pixel-identical to, the Rust placement math. `LetterWindow`/`MessageComposer` carry
+the express checkbox (`compose.rs`'s Mac-side counterpart) so both directions can send/receive
+express; the express speed multiplier is 3x on both platforms (`Courier.expressSpeedMultiplier` /
+`src-win/src/runtime.rs`'s `EXPRESS_SPEED_MULT` — keep these in sync if either changes).
+
+Verified with `swift build` on a Mac and `cargo check --target x86_64-pc-windows-gnu` (cross-compiled;
+no Windows box here) as of this note - both clean. `swift test` output didn't render in the shell that
+attempted it, and the cross-compiled Rust test binary couldn't be run without a working Wine setup, so
+re-run both before relying on test coverage. Mac users must run the app built from *this* branch, not
+the pre-merge `main`, for interop (moot now that `windows` has been merged in).
 
 ---
 
@@ -64,11 +88,9 @@ CLAUDE.md                     ← this file
 .github/workflows/release.yml ← tag `v*` → build + upload release assets (auto-update source)
 Package.swift, Sources/       ← upstream macOS app (only the messaging-interop carve-out is touched)
 Tests/, Scripts/, Resources/sprites/   ← upstream macOS app, untouched
-horse.jpg, mail.jpg           ← pixel-art courier props (baked into the Windows binary at build time)
 src-win/                      ← the Windows port (Rust)
   Cargo.toml
   publish.ps1                 build + `gh release` a new version for the in-app updater
-  build.rs                    decode/crop/downscale horse.jpg + mail.jpg → embedded RGBA sprites
   src/
     main.rs                   Win32 message loop, layered overlay window, tray, popup menu, wiring
     update.rs                 GitHub-release auto-update: WinHTTP download, BCrypt sha256, self-swap
@@ -130,12 +152,12 @@ Bonjour type (`_claudepet._udp`) and JSON shape. Wire format (both sides): a fla
 byte string. Mac↔Mac still rides MultipeerConnectivity; `CompositeTransport` de-dups deliveries by
 `id` so a peer reachable on both links isn't served twice.
 
-**Courier props** (`src-win/src/props.rs`, baked by `build.rs` from `horse.jpg` / `mail.jpg`): the
-resident pet holds the mail on every courier leg it walks; an **express** send (compose checkbox, or
-`express: true` on the wire) makes it ride the horse at `EXPRESS_SPEED_MULT` × courier speed. The
-receiving screen's visitor pet always holds the mail and rides the horse when the delivery was
-express. `FrameSprite.carry_mail` / `.on_horse` drive `main::draw_actor` (horse under → pet → mail
-over).
+**Courier props** (`src-win/src/pet/sprites.rs`'s `HORSE_FRAMES`/`MAIL_GRID` - pixel grids, not baked
+JPEGs; see the horse/mail section above): the resident pet holds the mail on every courier leg it
+walks; an **express** send (compose checkbox, or `express: true` on the wire) makes it ride the horse
+at `EXPRESS_SPEED_MULT` × courier speed. The receiving screen's visitor pet always holds the mail and
+rides the horse when the delivery was express. `FrameSprite.carry_mail` / `.on_horse` /
+`.horse_frame` drive `main::draw_actor` (horse under → pet → mail over).
 
 ## Build / run / test
 

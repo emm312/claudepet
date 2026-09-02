@@ -180,7 +180,7 @@ final class LetterWindow: NSWindow {
         }
 
         // windows-branch feature: send this one by horse, riding faster and
-        // showing the horse/mail props on both ends. See CourierProps.swift.
+        // showing the horse/mail props on both ends. See HorseSprite.swift/MailSprite.swift.
         let expressFont = NSFont(name: "Georgia-Italic", size: 12) ?? .systemFont(ofSize: 12)
         let express = NSButton(checkboxWithTitle: "Send by horse (express) \u{1F40E}", target: nil, action: nil)
         express.attributedTitle = NSAttributedString(

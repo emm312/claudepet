@@ -58,8 +58,13 @@ final class Runtime {
     private var outboundPendingPeers: Set<String> = []
     private var outboundAckedPeers: Set<String> = []
     /// Express (horse) delivery - only meaningful while `outboundCourier` is
-    /// active. windows-branch feature; see CourierProps.swift.
+    /// active. windows-branch feature; see HorseSprite.swift/MailSprite.swift.
     private var outboundExpress = false
+    /// The resident window's true ground height, captured when a delivery
+    /// starts - while riding express, the window is visually lifted above
+    /// this by `HorseSprite.riderLift` so the pet sits on the horse's back;
+    /// restored the moment the courier finishes so gravity resumes correctly.
+    private var outboundGroundY: CGFloat = 0
     private var horseProp: CourierProp?
     private var mailProp: CourierProp?
 
@@ -68,8 +73,12 @@ final class Runtime {
     private var visitor: VisitorPet?
     private var inboundMessage: PetMessage?
     private var inboundWindowShown = false
-    /// The visitor's fixed vertical position, captured once at spawn (mirrors
-    /// `VisitorPet`'s own `y`) so the props stay aligned with it every tick.
+    /// The visitor's true ground height, captured once at spawn.
+    private var visitorGroundY: CGFloat = 0
+    /// The visitor's actual vertical position (mirrors `VisitorPet`'s own
+    /// `y`) - equal to `visitorGroundY`, or lifted by `HorseSprite.riderLift`
+    /// for the whole trip when the delivery is express, so it sits on the
+    /// horse's back rather than overlapping it at the same height.
     private var visitorBaseY: CGFloat = 0
     private var visitorHorseProp: CourierProp?
     private var visitorMailProp: CourierProp?
@@ -242,6 +251,7 @@ final class Runtime {
         outboundPendingPeers = Set(peers)
         outboundAckedPeers = []
         outboundExpress = express
+        outboundGroundY = window.frame.origin.y
         outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: express)
         brain.setFalling(false)
         showBubble(force: express ? "saddling up - taking this one express" : Dialogue.departLine())
@@ -277,7 +287,8 @@ final class Runtime {
             ? window.frame.origin.x + handoffOffset
             : window.frame.origin.x - handoffOffset
 
-        visitorBaseY = window.frame.origin.y
+        visitorGroundY = window.frame.origin.y
+        visitorBaseY = visitorGroundY + (message.express ? HorseSprite.riderLift : 0)
         let visitor = VisitorPet(zoom: zoom, y: visitorBaseY)
         visitor.setX(offScreenX)
         self.visitor = visitor
@@ -302,12 +313,16 @@ final class Runtime {
                 }
                 var origin = window.frame.origin
                 origin.x = courier.x
+                origin.y = outboundExpress ? outboundGroundY + HorseSprite.riderLift : outboundGroundY
                 window.setFrameOrigin(origin)
                 suppressLocalMovement = true
             case .away:
                 if !wasAway { window.orderOut(nil) } // just finished walking off screen
                 suppressLocalMovement = true
             case .done:
+                // Land exactly on the ground the trip started from, undoing
+                // any express-ride lift before gravity/dragging resumes.
+                window.setFrameOrigin(CGPoint(x: courier.x, y: outboundGroundY))
                 outboundCourier = nil
                 outboundMessageID = nil
                 brain.setFalling(false)
@@ -317,7 +332,7 @@ final class Runtime {
         }
 
         if let courier = outboundCourier, courier.phase != .away {
-            updateResidentProps(origin: window.frame.origin, facingRight: courier.facingRight)
+            updateResidentProps(origin: window.frame.origin, facingRight: courier.facingRight, dt: dt)
         } else {
             hideResidentProps()
         }
@@ -326,7 +341,7 @@ final class Runtime {
             courier.tick(now: now)
             visitor.setX(courier.x)
             visitor.render(anim: courier.anim, facingRight: courier.facingRight, dt: dt)
-            updateVisitorProps(x: courier.x, express: courier.express, facingRight: courier.facingRight)
+            updateVisitorProps(x: courier.x, express: courier.express, facingRight: courier.facingRight, dt: dt)
             if courier.phase == .done {
                 if let message = inboundMessage {
                     transport.send(message.makeAck(), to: message.senderName)
@@ -354,25 +369,26 @@ final class Runtime {
     /// `main::draw_actor` on the Windows port (horse under, pet, mail over),
     /// with each prop as its own tag-along window instead of one composited
     /// canvas.
-    private func updateResidentProps(origin: CGPoint, facingRight: Bool) {
+    private func updateResidentProps(origin: CGPoint, facingRight: Bool, dt: TimeInterval) {
         let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
-        if outboundExpress, let horseImage = CourierProps.horse {
-            let prop = horseProp ?? CourierProp(image: horseImage, scale: CourierProps.horseScale)
+        if outboundExpress {
+            let prop = horseProp ?? CourierProp(frames: HorseSprite.frames, frameDuration: HorseSprite.frameDuration)
             horseProp = prop
-            let w = CGFloat(horseImage.width * CourierProps.horseScale)
-            prop.setOrigin(CGPoint(x: origin.x + spriteSize / 2 - w / 2, y: origin.y), flippedHorizontally: !facingRight)
+            let w = CGFloat(HorseSprite.frames[0].width)
+            // Ground level, not `origin.y` - the pet's window is already
+            // lifted by `HorseSprite.riderLift` while riding (see
+            // `tickMessaging`), and the horse itself should stay planted.
+            prop.setOrigin(CGPoint(x: origin.x + spriteSize / 2 - w / 2, y: outboundGroundY), flippedHorizontally: !facingRight, dt: dt)
         } else if let prop = horseProp {
             prop.dismiss()
             horseProp = nil
         }
 
-        if let mailImage = CourierProps.mail {
-            let prop = mailProp ?? CourierProp(image: mailImage, scale: CourierProps.mailScale)
-            mailProp = prop
-            let w = CGFloat(mailImage.width * CourierProps.mailScale)
-            let x = facingRight ? origin.x + spriteSize - w - 4 : origin.x + 4
-            prop.setOrigin(CGPoint(x: x, y: origin.y + 22), flippedHorizontally: !facingRight)
-        }
+        let mailProp = mailProp ?? CourierProp(frames: [MailSprite.image])
+        self.mailProp = mailProp
+        let mailW = CGFloat(MailSprite.image.width)
+        let mailX = facingRight ? origin.x + spriteSize - mailW - 4 : origin.x + 4
+        mailProp.setOrigin(CGPoint(x: mailX, y: origin.y + 22), flippedHorizontally: !facingRight)
     }
 
     private func hideResidentProps() {
@@ -383,25 +399,26 @@ final class Runtime {
     /// A visitor always carries the mail; it rides the horse only when the
     /// delivery it's carrying was sent express (`courier.express`, threaded
     /// from `PetMessage.express` in `startNextDeliveryIfIdle`).
-    private func updateVisitorProps(x: CGFloat, express: Bool, facingRight: Bool) {
+    private func updateVisitorProps(x: CGFloat, express: Bool, facingRight: Bool, dt: TimeInterval) {
         let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
-        if express, let horseImage = CourierProps.horse {
-            let prop = visitorHorseProp ?? CourierProp(image: horseImage, scale: CourierProps.horseScale)
+        if express {
+            let prop = visitorHorseProp ?? CourierProp(frames: HorseSprite.frames, frameDuration: HorseSprite.frameDuration)
             visitorHorseProp = prop
-            let w = CGFloat(horseImage.width * CourierProps.horseScale)
-            prop.setOrigin(CGPoint(x: x + spriteSize / 2 - w / 2, y: visitorBaseY), flippedHorizontally: !facingRight)
+            let w = CGFloat(HorseSprite.frames[0].width)
+            // Ground level, not `visitorBaseY` - the visitor's own window is
+            // already lifted by `HorseSprite.riderLift` while riding (see
+            // `startNextDeliveryIfIdle`), and the horse should stay planted.
+            prop.setOrigin(CGPoint(x: x + spriteSize / 2 - w / 2, y: visitorGroundY), flippedHorizontally: !facingRight, dt: dt)
         } else if let prop = visitorHorseProp {
             prop.dismiss()
             visitorHorseProp = nil
         }
 
-        if let mailImage = CourierProps.mail {
-            let prop = visitorMailProp ?? CourierProp(image: mailImage, scale: CourierProps.mailScale)
-            visitorMailProp = prop
-            let w = CGFloat(mailImage.width * CourierProps.mailScale)
-            let mx = facingRight ? x + spriteSize - w - 4 : x + 4
-            prop.setOrigin(CGPoint(x: mx, y: visitorBaseY + 22), flippedHorizontally: !facingRight)
-        }
+        let visitorMailProp = visitorMailProp ?? CourierProp(frames: [MailSprite.image])
+        self.visitorMailProp = visitorMailProp
+        let mailW = CGFloat(MailSprite.image.width)
+        let mailX = facingRight ? x + spriteSize - mailW - 4 : x + 4
+        visitorMailProp.setOrigin(CGPoint(x: mailX, y: visitorBaseY + 22), flippedHorizontally: !facingRight)
     }
 
     private func hideVisitorProps() {

@@ -124,15 +124,42 @@ final class LanUdpLink: PeerTransport {
     // MARK: - Outbound
 
     func send(_ message: PetMessage, to peerName: String) {
-        guard let endpoint = endpoints[peerName],
-              let data = try? JSONEncoder().encode(LanWireMessage(message))
-        else { return }
+        guard let endpoint = endpoints[peerName] else {
+            NSLog("ClaudePet LanUdpLink: send to unknown peer \(peerName)")
+            return
+        }
+        guard let data = try? JSONEncoder().encode(LanWireMessage(message)) else { return }
 
+        // `endpoint` is an unresolved Bonjour `.service` endpoint - the browser only
+        // ever enumerated its name, it never resolved host/port. Sending immediately
+        // after `start()` (the old behavior) fired the send while the connection was
+        // still `.preparing` mid-resolution, so the datagram was silently dropped
+        // instead of queued - discovery worked but delivery never did. Wait for
+        // `.ready` (resolution complete) before handing off data, and log every
+        // failure path since none of them surfaced anywhere before.
         let connection = NWConnection(to: endpoint, using: .udp)
+        connection.stateUpdateHandler = { [weak connection] state in
+            MainActor.assumeIsolated {
+                guard let connection else { return }
+                switch state {
+                case .ready:
+                    connection.send(content: data, completion: .contentProcessed { error in
+                        if let error {
+                            NSLog("ClaudePet LanUdpLink: send to \(peerName) failed: \(error)")
+                        }
+                        connection.cancel()
+                    })
+                case .failed(let error):
+                    NSLog("ClaudePet LanUdpLink: connection to \(peerName) failed: \(error)")
+                    connection.cancel()
+                case .waiting(let error):
+                    NSLog("ClaudePet LanUdpLink: connection to \(peerName) waiting: \(error)")
+                default:
+                    break
+                }
+            }
+        }
         connection.start(queue: .main)
-        connection.send(content: data, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
     }
 }
 

@@ -10,12 +10,17 @@ pub const GRID_SIZE: usize = 16;
 
 /// Palette index -> RGBA. Index 0 is always transparent. Values match the Swift
 /// palette after its `UInt8(component * 255)` truncation:
-///  1 = terracotta body, 2 = near-black eyes, 3 = angry red-tinted body.
-pub const PALETTE: [[u8; 4]; 4] = [
-    [0, 0, 0, 0],       // 0 transparent
+///  1 = terracotta body, 2 = near-black eyes, 3 = angry red-tinted body,
+///  4 = horse body, 5 = horse mane/tail/hooves (also the mail's flap line),
+///  6 = mail envelope.
+pub const PALETTE: [[u8; 4]; 7] = [
+    [0, 0, 0, 0],        // 0 transparent
     [197, 116, 87, 255], // 1 body
     [19, 19, 19, 255],   // 2 eyes
     [206, 71, 59, 255],  // 3 angry tint
+    [137, 92, 56, 255],  // 4 horse body
+    [55, 34, 21, 255],   // 5 horse mane/tail/hooves; mail flap line
+    [246, 239, 228, 255], // 6 mail envelope
 ];
 
 pub struct SpriteClip {
@@ -34,6 +39,9 @@ fn parse(rows: &[&str]) -> Vec<Vec<u8>> {
                     '1' => 1u8,
                     '2' => 2u8,
                     '3' => 3u8,
+                    '4' => 4u8,
+                    '5' => 5u8,
+                    '6' => 6u8,
                     _ => 0u8,
                 })
                 .collect()
@@ -289,6 +297,73 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
     );
     m
 }
+
+/// The express-delivery horse, authored as a pixel grid in the same style as
+/// the pet (flat color blocks, `.` = transparent) rather than baked from a
+/// photo. Mirrors `Sources/ClaudePet/Pet/HorseSprite.swift`. Two frames give
+/// it a simple gallop cycle: legs gathered under the body, then swept
+/// front-forward/back-backward.
+pub const HORSE_GRID_COLS: usize = 22;
+/// Brisk gallop cadence - matches `HorseSprite.frameDuration` in Swift.
+pub const HORSE_FRAME_DURATION: f64 = 1.0 / 12.0;
+
+pub static HORSE_FRAMES: LazyLock<[Vec<Vec<u8>>; 2]> = LazyLock::new(|| {
+    [
+        // Frame 1: gallop's "collected" phase - all four legs gathered under the body.
+        parse(&[
+            "......................",
+            "...............444....",
+            ".............44444444.",
+            "..........44444444544.",
+            "......444444444444444.",
+            "..4444444444444444444.",
+            ".544444444444444444444",
+            "....44...44.44...44...",
+            "....55...55.55...55...",
+            "......................",
+            "......................",
+            "......................",
+        ]),
+        // Frame 2: gallop's "extended" phase - front legs swept forward, back legs swept back.
+        parse(&[
+            "......................",
+            "...............444....",
+            ".............44444444.",
+            "..........44444444544.",
+            "......444444444444444.",
+            "..4444444444444444444.",
+            ".544444444444444444444",
+            ".44....44.....44...44.",
+            ".55....55.....55...55.",
+            "......................",
+            "......................",
+            "......................",
+        ]),
+    ]
+});
+
+/// The mail parcel carried on every courier leg - a plain envelope with a
+/// flap and a wax seal. Static (one frame): unlike the horse it doesn't need
+/// a gait cycle. Mirrors `Sources/ClaudePet/Pet/MailSprite.swift`.
+pub const MAIL_GRID_COLS: usize = 18;
+pub const MAIL_GRID_ROWS: usize = 12;
+
+pub static MAIL_GRID: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| {
+    parse(&[
+        "..................",
+        "..................",
+        ".5666666666666665.",
+        ".6566666666666656.",
+        ".6656666666666566.",
+        ".6665666336665666.",
+        ".6666666666666666.",
+        ".6666666666666666.",
+        ".6666666666666666.",
+        ".6666666666666666.",
+        "..................",
+        "..................",
+    ])
+});
 
 #[cfg(test)]
 mod tests {

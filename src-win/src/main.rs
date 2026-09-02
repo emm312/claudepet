@@ -14,7 +14,6 @@ mod layered_window;
 mod ledges;
 mod net;
 mod pet;
-mod props;
 mod render;
 mod runtime;
 mod tray;
@@ -22,6 +21,7 @@ mod update;
 
 use layered_window::LayeredWindow;
 use net::mdns_udp::MdnsUdpTransport;
+use pet::sprites;
 use pet::sprites::CLIPS;
 use runtime::{Runtime, ZOOM};
 use windows::core::w;
@@ -401,11 +401,10 @@ unsafe fn show_menu(app_ptr: *mut App, hwnd: HWND) {
     );
 }
 
-const HORSE_SCALE: i32 = 3;
-const MAIL_SCALE: i32 = 2;
-
 /// Draw one courier actor: horse (under, if express) → pet sprite → mail (over,
-/// if carrying). Mirrors for a left-facing actor.
+/// if carrying). Mirrors for a left-facing actor. The horse/mail are pixel
+/// grids in the pet's own style (`pet::sprites::HORSE_FRAMES`/`MAIL_GRID`),
+/// drawn at the same `ZOOM` as the pet.
 fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     let sprite_px = runtime::SPRITE_PX;
     let flip = !s.facing_right;
@@ -414,13 +413,13 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     let pet_y = if s.on_horse { s.y - 16 } else { s.y };
 
     if s.on_horse {
-        let h = &*props::HORSE;
-        let hw = h.w * HORSE_SCALE;
+        let frame = &sprites::HORSE_FRAMES[s.horse_frame % sprites::HORSE_FRAMES.len()];
+        let hw = sprites::HORSE_GRID_COLS as i32 * ZOOM;
         let hx = s.x + sprite_px / 2 - hw / 2;
         let hy = pet_y + sprite_px / 2 - 4;
         // No edge clamp here: `Canvas::put` clips every pixel, and clamping only
         // the horse would let the rider slide off it near the screen bottom.
-        canvas.blit_rgba(&h.px, h.w, h.h, hx, hy, HORSE_SCALE, flip);
+        canvas.blit_grid(frame, ZOOM, hx, hy, flip);
     }
 
     if let Some(clip) = CLIPS.get(&s.anim) {
@@ -429,16 +428,18 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     }
 
     if s.carry_mail {
-        let m = &*props::MAIL;
-        let mw = m.w * MAIL_SCALE;
-        let mh = m.h * MAIL_SCALE;
+        // A smaller zoom than the pet/horse - at ZOOM (5) an 18x12 grid would
+        // render almost as big as the pet itself.
+        const MAIL_ZOOM: i32 = 2;
+        let mw = sprites::MAIL_GRID_COLS as i32 * MAIL_ZOOM;
+        let mh = sprites::MAIL_GRID_ROWS as i32 * MAIL_ZOOM;
         let mx = if s.facing_right {
             s.x + sprite_px - mw - 4
         } else {
             s.x + 4
         };
         let my = pet_y + sprite_px - mh - 22;
-        canvas.blit_rgba(&m.px, m.w, m.h, mx, my, MAIL_SCALE, flip);
+        canvas.blit_grid(&sprites::MAIL_GRID, MAIL_ZOOM, mx, my, flip);
     }
 }
 

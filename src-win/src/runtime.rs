@@ -30,7 +30,7 @@ pub const BAR_H: i32 = 90;
 const BAR_HIT_PAD: i32 = 8; // the bar is tiny - give clicks a bigger target
 const DOCK_IN_SECS: f64 = 0.30; // "jumps in" glide toward the bar
 const UNDOCK_KICK: f64 = 240.0; // px/s sideways shove on "tumbles out"
-const EXPRESS_SPEED_MULT: f64 = 1.9; // courier speed on the horse
+const EXPRESS_SPEED_MULT: f64 = 3.0; // courier speed on the horse - matches Courier.expressSpeedMultiplier in Swift
 
 /// What `main` needs to blit a sprite this frame.
 pub struct FrameSprite {
@@ -43,6 +43,14 @@ pub struct FrameSprite {
     pub carry_mail: bool,
     /// Riding the horse (express delivery).
     pub on_horse: bool,
+    /// Which of `HORSE_FRAMES` to draw - only meaningful when `on_horse`.
+    pub horse_frame: usize,
+}
+
+/// Picks a horse gallop frame from the wall clock, so `main::draw_actor`
+/// doesn't need any dedicated animation state threaded through `Runtime`.
+fn current_horse_frame() -> usize {
+    ((now_secs() / crate::pet::sprites::HORSE_FRAME_DURATION) as u64 % 2) as usize
 }
 
 pub struct Runtime {
@@ -753,6 +761,7 @@ impl Runtime {
             facing_right: self.resident_facing_right(),
             carry_mail: couriering,
             on_horse: couriering && self.outbound_express,
+            horse_frame: current_horse_frame(),
         })
     }
 
@@ -770,6 +779,7 @@ impl Runtime {
             facing_right: self.visitor_facing_right,
             carry_mail: true, // a visitor always shows up holding the letter
             on_horse: self.inbound_express,
+            horse_frame: current_horse_frame(),
         })
     }
 

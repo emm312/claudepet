@@ -36,7 +36,7 @@ final class MultipeerLink: NSObject, PeerTransport {
     }
 
     override init() {
-        let peerID = MCPeerID(displayName: Self.localDisplayName)
+        let peerID = Self.loadOrCreatePeerID()
         self.peerID = peerID
         session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .optional)
         advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: nil, serviceType: Self.serviceType)
@@ -47,9 +47,41 @@ final class MultipeerLink: NSObject, PeerTransport {
         browser.delegate = self
     }
 
+    /// Reuses the same `MCPeerID` across launches (archived per display name,
+    /// so the dev workaround of running two named instances on one Mac still
+    /// gets two independent identities) rather than minting a fresh one every
+    /// time. A brand-new identity on every launch is what made quitting and
+    /// immediately reopening flaky: peers that still had the old identity in
+    /// their Bonjour cache or session would see a same-named but different
+    /// peer show up, sometimes get stuck mid-invite to the now-dead identity,
+    /// and never invite the new one until the stale entry finally timed out.
+    private static func loadOrCreatePeerID() -> MCPeerID {
+        let name = localDisplayName
+        let key = "ClaudePet.peerID.\(name)"
+        if let data = UserDefaults.standard.data(forKey: key),
+           let stored = try? NSKeyedUnarchiver.unarchivedObject(ofClass: MCPeerID.self, from: data),
+           stored.displayName == name {
+            return stored
+        }
+        let fresh = MCPeerID(displayName: name)
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: fresh, requiringSecureCoding: true) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+        return fresh
+    }
+
     func start() {
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
+    }
+
+    /// Tears everything down so peers are told promptly rather than left to
+    /// notice via timeout - see `loadOrCreatePeerID` for why a clean goodbye
+    /// matters for a quick quit-then-relaunch.
+    func stop() {
+        advertiser.stopAdvertisingPeer()
+        browser.stopBrowsingForPeers()
+        session.disconnect()
     }
 
     func send(_ message: PetMessage, to peerName: String) {
@@ -97,7 +129,10 @@ extension MultipeerLink: MCNearbyServiceAdvertiserDelegate {
 
 extension MultipeerLink: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
-        guard shouldInvite(peerID) else { return }
+        // Re-finding an already-connected peer happens (Bonjour re-announces
+        // periodically) - re-inviting it would just flap a session that's
+        // already fine.
+        guard shouldInvite(peerID), !session.connectedPeers.contains(peerID) else { return }
         browser.invitePeer(peerID, to: session, withContext: nil, timeout: 15)
     }
 

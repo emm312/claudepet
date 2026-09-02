@@ -517,7 +517,10 @@ final class Runtime {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.persistSoon() }
+            Task { @MainActor in
+                self?.persistSoon()
+                self?.transport.stop()
+            }
         }
 
         NotificationCenter.default.addObserver(

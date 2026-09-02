@@ -7,8 +7,9 @@ enum MessageComposer {
     /// Presents a modal, letter-themed compose panel (see `LetterWindow`).
     /// Returns `nil` if the user cancelled. If there's exactly one nearby
     /// peer it's targeted automatically and no picker is shown; with more
-    /// than one, a pop-up lets the user choose.
-    static func present(peerNames: [String]) -> (text: String, peer: String)? {
+    /// than one, a checklist lets the user address the letter to several at
+    /// once (all checked by default).
+    static func present(peerNames: [String]) -> (text: String, peers: [String])? {
         guard !peerNames.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "No pets nearby"

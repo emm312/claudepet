@@ -67,9 +67,11 @@ final class LetterWindow: NSWindow {
 
     private let mode: Mode
     private let textView = PlaceholderTextView()
-    private var peerPopup: NSPopUpButton?
+    /// One checkbox per peer, shown instead of `singlePeer` when there's more
+    /// than one nearby - letting a letter go out to several at once.
+    private var peerCheckboxes: [NSButton] = []
     private let singlePeer: String?
-    private var result: (text: String, peer: String)?
+    private var result: (text: String, peers: [String])?
 
     /// Only meaningful in `.read` mode: whether the reader has switched the
     /// panel over to composing a reply.
@@ -80,14 +82,20 @@ final class LetterWindow: NSWindow {
     private var leftButton: NSButton!
     private var rightButton: PillButton!
 
-    private static let size = CGSize(width: 360, height: 300)
+    private static let baseSize = CGSize(width: 360, height: 300)
+    private static let peerRowHeight: CGFloat = 20
+    private let windowSize: CGSize
 
-    /// Compose mode: presents a blank letter addressed to one of `peerNames`.
+    /// Compose mode: presents a blank letter addressed to one or more of
+    /// `peerNames`. The window grows to fit the peer checklist when there's
+    /// more than one nearby.
     init(peerNames: [String]) {
         mode = .compose
         singlePeer = peerNames.count == 1 ? peerNames[0] : nil
+        let extraRows = max(0, peerNames.count - 1)
+        windowSize = CGSize(width: Self.baseSize.width, height: Self.baseSize.height + CGFloat(extraRows) * Self.peerRowHeight)
         super.init(
-            contentRect: CGRect(origin: .zero, size: Self.size),
+            contentRect: CGRect(origin: .zero, size: windowSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -101,8 +109,9 @@ final class LetterWindow: NSWindow {
     init(message: PetMessage) {
         mode = .read(message)
         singlePeer = message.senderName
+        windowSize = Self.baseSize
         super.init(
-            contentRect: CGRect(origin: .zero, size: Self.size),
+            contentRect: CGRect(origin: .zero, size: windowSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -121,7 +130,7 @@ final class LetterWindow: NSWindow {
     }
 
     private func buildUI(peerNames: [String]) {
-        let size = Self.size
+        let size = windowSize
         let card = LetterCardView(frame: CGRect(origin: .zero, size: size))
         contentView = card
 
@@ -153,17 +162,20 @@ final class LetterWindow: NSWindow {
             peerLabel.frame = CGRect(x: 60, y: toY, width: size.width - 82, height: 20)
             card.addSubview(peerLabel)
         } else {
-            let popup = NSPopUpButton(frame: CGRect(x: 56, y: toY - 3, width: size.width - 78, height: 24), pullsDown: false)
-            popup.addItems(withTitles: peerNames)
-            popup.isBordered = false
-            (popup.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtCenter
+            // A checkbox per nearby peer, all checked by default, so one
+            // letter can go out to several pets at once.
             let font = NSFont(name: "Georgia-Italic", size: 13) ?? .systemFont(ofSize: 13)
-            for item in popup.itemArray {
-                item.attributedTitle = NSAttributedString(string: item.title, attributes: [.font: font, .foregroundColor: LetterTheme.ink])
+            var y = toY
+            for name in peerNames {
+                let checkbox = NSButton(checkboxWithTitle: name, target: nil, action: nil)
+                checkbox.attributedTitle = NSAttributedString(string: name, attributes: [.font: font, .foregroundColor: LetterTheme.ink])
+                checkbox.state = .on
+                checkbox.frame = CGRect(x: 46, y: y - 2, width: size.width - 68, height: Self.peerRowHeight)
+                card.addSubview(checkbox)
+                peerCheckboxes.append(checkbox)
+                y -= Self.peerRowHeight
             }
-            card.addSubview(popup)
-            peerPopup = popup
-            toY -= 4
+            toY = y - 2
         }
 
         let scroll = NSScrollView(frame: CGRect(x: 20, y: 56, width: size.width - 40, height: toY - 66))
@@ -283,9 +295,9 @@ final class LetterWindow: NSWindow {
 
     private func submitIfNonEmpty() {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        let peer = singlePeer ?? peerPopup?.titleOfSelectedItem
-        if !text.isEmpty, let peer {
-            result = (text, peer)
+        let peers = singlePeer.map { [$0] } ?? peerCheckboxes.filter { $0.state == .on }.map(\.title)
+        if !text.isEmpty, !peers.isEmpty {
+            result = (text, peers)
             NSApp.stopModal()
         }
     }
@@ -298,7 +310,7 @@ final class LetterWindow: NSWindow {
     /// mirroring `NSAlert.runModal`'s call shape. `nil` means "closed without
     /// sending" - either a cancelled compose, or a read letter dismissed with
     /// "OK" and no reply.
-    func runModal() -> (text: String, peer: String)? {
+    func runModal() -> (text: String, peers: [String])? {
         NSApp.activate(ignoringOtherApps: true)
         center()
         makeKeyAndOrderFront(nil)

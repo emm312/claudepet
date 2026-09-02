@@ -46,7 +46,9 @@ final class Runtime {
 
     // MARK: - Pet-to-pet messaging
 
-    private let transport: PeerTransport = MultipeerLink()
+    // windows-branch: MultipeerConnectivity for macOS<->macOS, plus a
+    // wire-compatible LAN UDP link for macOS<->Windows. See CLAUDE.md.
+    private let transport: PeerTransport = CompositeTransport([MultipeerLink(), LanUdpLink()])
 
     /// Active while the local pet is out delivering a message.
     private var outboundCourier: Courier?
@@ -55,12 +57,22 @@ final class Runtime {
     /// only meaningful while `outboundCourier` is active.
     private var outboundPendingPeers: Set<String> = []
     private var outboundAckedPeers: Set<String> = []
+    /// Express (horse) delivery - only meaningful while `outboundCourier` is
+    /// active. windows-branch feature; see CourierProps.swift.
+    private var outboundExpress = false
+    private var horseProp: CourierProp?
+    private var mailProp: CourierProp?
 
     /// Active while a visitor's sprite is walking through a handoff.
     private var inboundCourier: Courier?
     private var visitor: VisitorPet?
     private var inboundMessage: PetMessage?
     private var inboundWindowShown = false
+    /// The visitor's fixed vertical position, captured once at spawn (mirrors
+    /// `VisitorPet`'s own `y`) so the props stay aligned with it every tick.
+    private var visitorBaseY: CGFloat = 0
+    private var visitorHorseProp: CourierProp?
+    private var visitorMailProp: CourierProp?
 
     /// Deliveries that arrived while another was already playing out, so they
     /// hand off one at a time instead of stacking visitors.
@@ -171,8 +183,8 @@ final class Runtime {
     @objc private func menuSendMessage() { presentMessageComposer() }
 
     func presentMessageComposer() {
-        guard let (text, peers) = MessageComposer.present(peerNames: transport.peerNames) else { return }
-        sendMessage(text, to: peers)
+        guard let (text, peers, express) = MessageComposer.present(peerNames: transport.peerNames) else { return }
+        sendMessage(text, to: peers, express: express)
     }
 
     /// Shows an arrived letter in the same letter-styled window used for
@@ -180,7 +192,7 @@ final class Runtime {
     /// a reply. Runs synchronously mid-tick, same as the compose flow.
     private func presentIncomingMessage(_ message: PetMessage) {
         guard let reply = LetterWindow(message: message).runModal() else { return }
-        sendMessage(reply.text, to: reply.peers)
+        sendMessage(reply.text, to: reply.peers, express: reply.express)
     }
 
     // MARK: - Actions (also used by the status bar menu)
@@ -216,7 +228,7 @@ final class Runtime {
     /// pet walks home once at least one ack (or the timeout) comes back.
     /// Ignored if the pet is already out delivering something, or if `peers`
     /// is empty.
-    func sendMessage(_ text: String, to peers: [String]) {
+    func sendMessage(_ text: String, to peers: [String], express: Bool = false) {
         guard outboundCourier == nil, !peers.isEmpty else { return }
 
         let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
@@ -225,13 +237,14 @@ final class Runtime {
         let edge: PetMessage.Edge = (homeX - screen.minX) < (screen.maxX - homeX - window.frame.width) ? .left : .right
         let offScreenX = edge == .right ? screen.maxX + window.frame.width : screen.minX - window.frame.width
 
-        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: edge)
+        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: edge, express: express)
         outboundMessageID = message.id
         outboundPendingPeers = Set(peers)
         outboundAckedPeers = []
-        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge)
+        outboundExpress = express
+        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: express)
         brain.setFalling(false)
-        showBubble(force: Dialogue.departLine())
+        showBubble(force: express ? "saddling up - taking this one express" : Dialogue.departLine())
         for peer in peers {
             transport.send(message, to: peer)
         }
@@ -264,11 +277,12 @@ final class Runtime {
             ? window.frame.origin.x + handoffOffset
             : window.frame.origin.x - handoffOffset
 
-        let visitor = VisitorPet(zoom: zoom, y: window.frame.origin.y)
+        visitorBaseY = window.frame.origin.y
+        let visitor = VisitorPet(zoom: zoom, y: visitorBaseY)
         visitor.setX(offScreenX)
         self.visitor = visitor
         inboundWindowShown = false
-        inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge)
+        inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge, express: message.express)
     }
 
     /// Advances any active couriers/visitor by one tick. Returns whether the
@@ -302,10 +316,17 @@ final class Runtime {
             }
         }
 
+        if let courier = outboundCourier, courier.phase != .away {
+            updateResidentProps(origin: window.frame.origin, facingRight: courier.facingRight)
+        } else {
+            hideResidentProps()
+        }
+
         if let courier = inboundCourier, let visitor {
             courier.tick(now: now)
             visitor.setX(courier.x)
             visitor.render(anim: courier.anim, facingRight: courier.facingRight, dt: dt)
+            updateVisitorProps(x: courier.x, express: courier.express, facingRight: courier.facingRight)
             if courier.phase == .done {
                 if let message = inboundMessage {
                     transport.send(message.makeAck(), to: message.senderName)
@@ -314,14 +335,78 @@ final class Runtime {
                 self.visitor = nil
                 inboundCourier = nil
                 inboundMessage = nil
+                hideVisitorProps()
                 startNextDeliveryIfIdle()
             } else if courier.phase == .handing, !inboundWindowShown, let message = inboundMessage {
                 inboundWindowShown = true
                 presentIncomingMessage(message)
             }
+        } else {
+            hideVisitorProps()
         }
 
         return suppressLocalMovement
+    }
+
+    // MARK: - Courier props (horse + mail)
+
+    /// `origin` is the resident pet window's bottom-left corner. Mirrors
+    /// `main::draw_actor` on the Windows port (horse under, pet, mail over),
+    /// with each prop as its own tag-along window instead of one composited
+    /// canvas.
+    private func updateResidentProps(origin: CGPoint, facingRight: Bool) {
+        let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
+        if outboundExpress, let horseImage = CourierProps.horse {
+            let prop = horseProp ?? CourierProp(image: horseImage, scale: CourierProps.horseScale)
+            horseProp = prop
+            let w = CGFloat(horseImage.width * CourierProps.horseScale)
+            prop.setOrigin(CGPoint(x: origin.x + spriteSize / 2 - w / 2, y: origin.y), flippedHorizontally: !facingRight)
+        } else if let prop = horseProp {
+            prop.dismiss()
+            horseProp = nil
+        }
+
+        if let mailImage = CourierProps.mail {
+            let prop = mailProp ?? CourierProp(image: mailImage, scale: CourierProps.mailScale)
+            mailProp = prop
+            let w = CGFloat(mailImage.width * CourierProps.mailScale)
+            let x = facingRight ? origin.x + spriteSize - w - 4 : origin.x + 4
+            prop.setOrigin(CGPoint(x: x, y: origin.y + 22), flippedHorizontally: !facingRight)
+        }
+    }
+
+    private func hideResidentProps() {
+        horseProp?.dismiss(); horseProp = nil
+        mailProp?.dismiss(); mailProp = nil
+    }
+
+    /// A visitor always carries the mail; it rides the horse only when the
+    /// delivery it's carrying was sent express (`courier.express`, threaded
+    /// from `PetMessage.express` in `startNextDeliveryIfIdle`).
+    private func updateVisitorProps(x: CGFloat, express: Bool, facingRight: Bool) {
+        let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
+        if express, let horseImage = CourierProps.horse {
+            let prop = visitorHorseProp ?? CourierProp(image: horseImage, scale: CourierProps.horseScale)
+            visitorHorseProp = prop
+            let w = CGFloat(horseImage.width * CourierProps.horseScale)
+            prop.setOrigin(CGPoint(x: x + spriteSize / 2 - w / 2, y: visitorBaseY), flippedHorizontally: !facingRight)
+        } else if let prop = visitorHorseProp {
+            prop.dismiss()
+            visitorHorseProp = nil
+        }
+
+        if let mailImage = CourierProps.mail {
+            let prop = visitorMailProp ?? CourierProp(image: mailImage, scale: CourierProps.mailScale)
+            visitorMailProp = prop
+            let w = CGFloat(mailImage.width * CourierProps.mailScale)
+            let mx = facingRight ? x + spriteSize - w - 4 : x + 4
+            prop.setOrigin(CGPoint(x: mx, y: visitorBaseY + 22), flippedHorizontally: !facingRight)
+        }
+    }
+
+    private func hideVisitorProps() {
+        visitorHorseProp?.dismiss(); visitorHorseProp = nil
+        visitorMailProp?.dismiss(); visitorMailProp = nil
     }
 
     // MARK: - Timers

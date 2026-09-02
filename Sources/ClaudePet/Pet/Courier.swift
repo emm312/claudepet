@@ -25,6 +25,10 @@ final class Courier {
     private(set) var phase: Phase
     let role: Role
     let edge: PetMessage.Edge
+    /// Express (horse) delivery - the courier moves at `expressSpeedMultiplier`
+    /// times the normal pace. Purely a speed/rendering flag; the state machine
+    /// itself is unchanged.
+    let express: Bool
 
     private(set) var x: CGFloat
     private(set) var facingRight = true
@@ -38,6 +42,8 @@ final class Courier {
     private var lastTickDate: Date
 
     private static let speed: CGFloat = 90 // pt/s - brisker than the normal idle walk
+    static let expressSpeedMultiplier: CGFloat = 1.9
+    private var effectiveSpeed: CGFloat { express ? Self.speed * Self.expressSpeedMultiplier : Self.speed }
     static let handoffDuration: TimeInterval = 2.2
     static let awayTimeout: TimeInterval = 10
     private static let arrivalEpsilon: CGFloat = 2
@@ -55,15 +61,15 @@ final class Courier {
     /// delivering and hasn't started walking back yet.
     var isAway: Bool { phase == .away }
 
-    static func outbound(startX: CGFloat, homeX: CGFloat, offScreenX: CGFloat, edge: PetMessage.Edge, now: Date = Date()) -> Courier {
-        Courier(role: .outbound, phase: .departing, edge: edge, x: startX, offScreenX: offScreenX, homeX: homeX, handoffX: homeX, now: now)
+    static func outbound(startX: CGFloat, homeX: CGFloat, offScreenX: CGFloat, edge: PetMessage.Edge, express: Bool = false, now: Date = Date()) -> Courier {
+        Courier(role: .outbound, phase: .departing, edge: edge, x: startX, offScreenX: offScreenX, homeX: homeX, handoffX: homeX, express: express, now: now)
     }
 
-    static func inbound(offScreenX: CGFloat, handoffX: CGFloat, edge: PetMessage.Edge, now: Date = Date()) -> Courier {
-        Courier(role: .inbound, phase: .arriving, edge: edge, x: offScreenX, offScreenX: offScreenX, homeX: handoffX, handoffX: handoffX, now: now)
+    static func inbound(offScreenX: CGFloat, handoffX: CGFloat, edge: PetMessage.Edge, express: Bool = false, now: Date = Date()) -> Courier {
+        Courier(role: .inbound, phase: .arriving, edge: edge, x: offScreenX, offScreenX: offScreenX, homeX: handoffX, handoffX: handoffX, express: express, now: now)
     }
 
-    private init(role: Role, phase: Phase, edge: PetMessage.Edge, x: CGFloat, offScreenX: CGFloat, homeX: CGFloat, handoffX: CGFloat, now: Date) {
+    private init(role: Role, phase: Phase, edge: PetMessage.Edge, x: CGFloat, offScreenX: CGFloat, homeX: CGFloat, handoffX: CGFloat, express: Bool, now: Date) {
         self.role = role
         self.phase = phase
         self.edge = edge
@@ -71,6 +77,7 @@ final class Courier {
         self.offScreenX = offScreenX
         self.homeX = homeX
         self.handoffX = handoffX
+        self.express = express
         lastTickDate = now
         if role == .outbound {
             awayDeadline = now.addingTimeInterval(Self.awayTimeout)
@@ -123,7 +130,7 @@ final class Courier {
 
     private func moveToward(_ target: CGFloat, dt: TimeInterval) {
         facingRight = target > x
-        let step = CGFloat(dt) * Self.speed
+        let step = CGFloat(dt) * effectiveSpeed
         if abs(target - x) <= step {
             x = target
         } else {

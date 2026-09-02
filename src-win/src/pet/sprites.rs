@@ -300,44 +300,47 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
 
 /// The express-delivery horse, authored as a pixel grid in the same style as
 /// the pet (flat color blocks, `.` = transparent) rather than baked from a
-/// photo. Mirrors `Sources/ClaudePet/Pet/HorseSprite.swift`. Two frames give
-/// it a simple gallop cycle: legs gathered under the body, then swept
-/// front-forward/back-backward.
+/// photo. Faces right: ears and head top-right, a maned neck sloping down into
+/// the barrel, rump and tail at the left, four legs below. Mirrors
+/// `Sources/ClaudePet/Pet/HorseSprite.swift`. Two frames give it a gallop
+/// cycle: legs gathered under the body, then front legs reaching forward and
+/// hind legs driving back.
 pub const HORSE_GRID_COLS: usize = 22;
 /// Brisk gallop cadence - matches `HorseSprite.frameDuration` in Swift.
 pub const HORSE_FRAME_DURATION: f64 = 1.0 / 12.0;
 
+/// Rows 0-8 are the same in both frames - only the legs (rows 9-11) move.
+const HORSE_TORSO: [&str; 9] = [
+    "......................",
+    ".................4.4..", // ears
+    ".................4444.", // skull
+    "................445444", // brow, eye, muzzle
+    ".............555444444", // mane over jaw
+    "...........554444444..", // mane over neck
+    ".554444444444444444...", // tail root + back
+    "554444444444444444....", // tail + barrel
+    "55.44444444444444.....", // tail + belly
+];
+
 pub static HORSE_FRAMES: LazyLock<[Vec<Vec<u8>>; 2]> = LazyLock::new(|| {
+    let frame = |legs: [&str; 3]| {
+        let rows: Vec<&str> = HORSE_TORSO.iter().copied().chain(legs).collect();
+        parse(&rows)
+    };
     [
         // Frame 1: gallop's "collected" phase - all four legs gathered under the body.
-        parse(&[
-            "......................",
-            "...............444....",
-            ".............44444444.",
-            "..........44444444544.",
-            "......444444444444444.",
-            "..4444444444444444444.",
-            ".544444444444444444444",
-            "....44...44.44...44...",
-            "....55...55.55...55...",
-            "......................",
-            "......................",
-            "......................",
+        frame([
+            "....44.44....44.44....",
+            "....44.44....44.44....",
+            "....55.55....55.55....",
         ]),
-        // Frame 2: gallop's "extended" phase - front legs swept forward, back legs swept back.
-        parse(&[
-            "......................",
-            "...............444....",
-            ".............44444444.",
-            "..........44444444544.",
-            "......444444444444444.",
-            "..4444444444444444444.",
-            ".544444444444444444444",
-            ".44....44.....44...44.",
-            ".55....55.....55...55.",
-            "......................",
-            "......................",
-            "......................",
+        // Frame 2: gallop's "extended" phase - hind legs driving back, fore legs
+        // reaching forward. The upper row stays put so the legs read as swinging
+        // from the body rather than sliding sideways as a whole.
+        frame([
+            "....44.44....44.44....",
+            "..44.44........44.44..",
+            ".55.55..........55.55.",
         ]),
     ]
 });

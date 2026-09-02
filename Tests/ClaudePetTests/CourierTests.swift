@@ -63,7 +63,11 @@ struct CourierTests {
         #expect(courier.phase == .handing)
         #expect(abs(courier.x - 40) < 0.01)
 
-        // Handoff duration is 2.2s - not done until then.
+        // Short "touch and go" handoff (0.5s): still handing a moment in...
+        courier.tick(now: start.addingTimeInterval(3.2))
+        #expect(courier.phase == .handing)
+
+        // ...and gone once it elapses.
         courier.tick(now: start.addingTimeInterval(4))
         #expect(courier.phase == .leaving)
 

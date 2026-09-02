@@ -13,6 +13,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let cleanlinessItem = NSMenuItem(title: "Cleanliness: --", action: nil, keyEquivalent: "")
     private var peersMenuItem: NSMenuItem!
     private var accessibilityItem: NSMenuItem!
+    /// Shown only while a delivered letter is waiting - see `menuWillOpen`.
+    private var readLetterItem: NSMenuItem!
 
     init(runtime: Runtime) {
         self.runtime = runtime
@@ -33,6 +35,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(withAction("Play", #selector(play)))
         menu.addItem(withAction("Clean", #selector(clean)))
         menu.addItem(.separator())
+
+        readLetterItem = withAction("Read Letter…", #selector(readLetter))
+        readLetterItem.isHidden = true
+        menu.addItem(readLetterItem)
 
         menu.addItem(withAction("Send Message…", #selector(sendMessage)))
         let peersMenuItem = withAction("Peers", nil)
@@ -72,6 +78,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         happinessItem.title = "Happiness: \(Int(state.happiness))%"
         cleanlinessItem.title = "Cleanliness: \(Int(state.cleanliness))%"
         accessibilityItem.isHidden = AXIsProcessTrusted()
+        readLetterItem.isHidden = !(runtime?.hasUnreadLetter ?? false)
     }
 
     /// Called by the Runtime whenever the set of connected peers changes, so
@@ -99,6 +106,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func clean() { runtime?.clean() }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func sendMessage() { runtime?.presentMessageComposer() }
+    @objc private func readLetter() { runtime?.openUnreadLetter() }
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
         let newValue = !LoginItemManager.isEnabled

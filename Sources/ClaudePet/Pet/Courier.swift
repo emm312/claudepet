@@ -44,7 +44,12 @@ final class Courier {
     private static let speed: CGFloat = 90 // pt/s - brisker than the normal idle walk
     static let expressSpeedMultiplier: CGFloat = 3.0
     private var effectiveSpeed: CGFloat { express ? Self.speed * Self.expressSpeedMultiplier : Self.speed }
-    static let handoffDuration: TimeInterval = 2.2
+    /// How long the inbound visitor pauses beside the resident pet to pass the
+    /// letter. Was 2.2s so the message could be shown during the handoff; now
+    /// the resident pet keeps the letter and it's opened on demand (see
+    /// `Runtime.handlePet` / `LetterWindow`), so the visitor just touches and
+    /// goes rather than lingering. Matches `HANDOFF_DURATION` in the Windows port.
+    static let handoffDuration: TimeInterval = 0.5
     /// How long the outbound pet waits off-screen for an ack before circling
     /// back. 15s (not 10) so a slow discovery/address-fixup on the sender or a
     /// congested LAN doesn't fire the "message bounced" bubble for a message

@@ -79,7 +79,14 @@ final class Runtime {
     private var inboundCourier: Courier?
     private var visitor: VisitorPet?
     private var inboundMessage: PetMessage?
-    private var inboundWindowShown = false
+    /// Set once the visitor reaches the handoff point and the letter has been
+    /// stashed into `unreadLetters` - guards that append from repeating per tick.
+    private var inboundHandedOff = false
+    /// Delivered letters not yet read. The resident pet holds the mail sprite
+    /// while this is non-empty; clicking the pet opens the oldest one (see
+    /// `openUnreadLetter`). In-memory only, like the Windows port's
+    /// `Runtime::unread` - a deliberate change from auto-opening the reader.
+    private var unreadLetters: [PetMessage] = []
     /// The visitor's true ground height, captured once at spawn.
     private var visitorGroundY: CGFloat = 0
     /// The visitor's actual vertical position (mirrors `VisitorPet`'s own
@@ -140,6 +147,7 @@ final class Runtime {
 
     private func wireViewCallbacks() {
         view.onClick = { [weak self] in self?.handlePet() }
+        view.onClickUp = { [weak self] in self?.openUnreadLetter() }
         view.onDragStart = { [weak self] point in
             self?.dragOffset = point
             self?.brain.beginDrag()
@@ -154,8 +162,24 @@ final class Runtime {
 
     private func handlePet() {
         guard !isDragActive else { return }
+        // A waiting letter takes over the click; petting resumes once it's been
+        // opened. Opening happens on mouse-*up* (`openUnreadLetter`) so a drag
+        // can't trigger it and the press's event sequence finishes before the
+        // modal `LetterWindow` runs.
+        guard unreadLetters.isEmpty else { return }
         state.pet()
         showBubble()
+    }
+
+    /// Is a delivered letter waiting to be read? Drives the "Read Letter…" menu
+    /// items' visibility.
+    var hasUnreadLetter: Bool { !unreadLetters.isEmpty }
+
+    /// Open the oldest unread letter, if any - wired to the pet's clean-click
+    /// (mouse-up, no drag), the pet's right-click menu, and the status item.
+    func openUnreadLetter() {
+        guard !isDragActive, !unreadLetters.isEmpty else { return }
+        presentIncomingMessage(unreadLetters.removeFirst())
     }
 
     private var isDragActive = false
@@ -175,6 +199,11 @@ final class Runtime {
 
     private func showContextMenu(for event: NSEvent) {
         let menu = NSMenu()
+        if !unreadLetters.isEmpty {
+            menu.addItem(withTitle: "Read Letter…", action: #selector(menuReadLetter), keyEquivalent: "")
+                .target = self
+            menu.addItem(.separator())
+        }
         menu.addItem(withTitle: "Feed", action: #selector(menuFeed), keyEquivalent: "")
             .target = self
         menu.addItem(withTitle: "Play", action: #selector(menuPlay), keyEquivalent: "")
@@ -197,6 +226,7 @@ final class Runtime {
     @objc private func menuClean() { clean() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
     @objc private func menuSendMessage() { presentMessageComposer() }
+    @objc private func menuReadLetter() { openUnreadLetter() }
 
     func presentMessageComposer() {
         guard let (text, peers, express) = MessageComposer.present(peerNames: transport.peerNames) else { return }
@@ -298,7 +328,7 @@ final class Runtime {
         let visitor = VisitorPet(zoom: zoom, y: visitorBaseY)
         visitor.setX(offScreenX)
         self.visitor = visitor
-        inboundWindowShown = false
+        inboundHandedOff = false
         inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge, express: message.express)
     }
 
@@ -352,6 +382,10 @@ final class Runtime {
 
         if let courier = outboundCourier, courier.phase != .away {
             updateResidentProps(origin: window.frame.origin, facingRight: courier.facingRight, dt: dt)
+        } else if !unreadLetters.isEmpty {
+            // Not couriering, but a delivered letter is waiting - keep the mail
+            // in the pet's hand as the "click me" cue.
+            updateUnreadMailProp(origin: window.frame.origin, facingRight: currentFacingRight)
         } else {
             hideResidentProps()
         }
@@ -371,9 +405,13 @@ final class Runtime {
                 inboundMessage = nil
                 hideVisitorProps()
                 startNextDeliveryIfIdle()
-            } else if courier.phase == .handing, !inboundWindowShown, let message = inboundMessage {
-                inboundWindowShown = true
-                presentIncomingMessage(message)
+            } else if courier.phase == .handing, !inboundHandedOff, let message = inboundMessage {
+                // Don't pop the reader open. Stash the letter and let the pet
+                // carry the envelope until it's clicked (mirrors the Windows
+                // port); the bubble is a content-free "you've got mail" beat.
+                inboundHandedOff = true
+                unreadLetters.append(message)
+                showBubble(force: "a letter from \(message.senderName) \u{2709}")
             }
         } else {
             hideVisitorProps()
@@ -413,6 +451,19 @@ final class Runtime {
     private func hideResidentProps() {
         horseProp?.dismiss(); horseProp = nil
         mailProp?.dismiss(); mailProp = nil
+    }
+
+    /// The resident pet keeps the mail in hand while a delivered letter is
+    /// waiting to be read - no horse, this isn't a courier leg. Positioned like
+    /// the carried mail in `updateResidentProps`.
+    private func updateUnreadMailProp(origin: CGPoint, facingRight: Bool) {
+        if let prop = horseProp { prop.dismiss(); horseProp = nil }
+        let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
+        let prop = mailProp ?? CourierProp(frames: [MailSprite.image])
+        mailProp = prop
+        let mailW = CGFloat(MailSprite.image.width)
+        let mailX = facingRight ? origin.x + spriteSize - mailW - 4 : origin.x + 4
+        prop.setOrigin(CGPoint(x: mailX, y: origin.y + 22), flippedHorizontally: !facingRight)
     }
 
     /// A visitor always carries the mail; it rides the horse only when the

@@ -9,7 +9,13 @@ final class OverlayView: NSView {
     private var currentImage: CGImage?
 
     /// Called when the user left-clicks a non-transparent pixel of the sprite.
+    /// Fires on mouse-*down*, so it also fires at the start of a drag.
     var onClick: (() -> Void)?
+    /// Called on mouse-*up* only when the press was a clean click (released
+    /// within a few px of where it went down, i.e. not a drag). This is the
+    /// signal to use for actions that shouldn't fire mid-drag - it mirrors the
+    /// Windows port's `!app.moved` check.
+    var onClickUp: (() -> Void)?
     /// Called on mouse-down on a non-transparent pixel; passes the click point in
     /// window-local coordinates (i.e. the grab offset within the pet's sprite).
     var onDragStart: ((CGPoint) -> Void)?
@@ -98,7 +104,10 @@ final class OverlayView: NSView {
         return ptr[alphaOffset] > 10
     }
 
+    private var mouseDownLocation: CGPoint?
+
     override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = event.locationInWindow
         onDragStart?(event.locationInWindow)
         onClick?()
     }
@@ -109,6 +118,14 @@ final class OverlayView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         onDragEnd?()
+        if let down = mouseDownLocation {
+            let up = event.locationInWindow
+            let dx = up.x - down.x, dy = up.y - down.y
+            if dx * dx + dy * dy < 16 { // released within ~4px of the press: a click, not a drag
+                onClickUp?()
+            }
+        }
+        mouseDownLocation = nil
     }
 
     override func rightMouseDown(with event: NSEvent) {

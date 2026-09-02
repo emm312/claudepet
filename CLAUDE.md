@@ -11,10 +11,14 @@ The Swift sources are upstream and stay that way **with one exception**: the cro
 messaging interop, which has grown since this branch was cut. On this branch the macOS app also
 carries `Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift`
 uses them (`CompositeTransport([MultipeerLink(), LanUdpLink()])`); `Net/PetMessage.swift` gains an
-optional-decoded `express` field so the horse/express flag survives the round trip; and
+optional-decoded `express` field so the horse/express flag survives the round trip;
 `Overlay/CourierProp.swift` + `Pet/HorseSprite.swift` + `Pet/MailSprite.swift` add the horse/mail
-rendering (see below). Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched, and
-none of it is ever pushed to `main`.
+rendering (see below); and `Runtime.swift` + `Overlay/OverlayView.swift` + `Pet/Courier.swift` + `UI/StatusItem.swift` carry
+the click-to-open received-letter UX that matches the Windows port (see "Receiving a letter" under
+Networking — no auto-opening reader, mail in the pet's hand, `handoffDuration` 0.5s, a "Read Letter…"
+item on the pet's right-click menu and the status item). `Tests/ClaudePetTests/CourierTests.swift`
+tracks the shorter handoff. Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched,
+and none of it is ever pushed to `main`.
 
 This carve-out was cut from `main` before three commits landed there (`dc69ae9` incoming-message
 letter window, `ba30cfd` multi-recipient sends, `171fe15` the flaky-discovery fix); all three have
@@ -59,11 +63,14 @@ the express checkbox (`compose.rs`'s Mac-side counterpart) so both directions ca
 express; the express speed multiplier is 3x on both platforms (`Courier.expressSpeedMultiplier` /
 `src-win/src/runtime.rs`'s `EXPRESS_SPEED_MULT` — keep these in sync if either changes).
 
-Verified with `swift build` on a Mac and `cargo check --target x86_64-pc-windows-gnu` (cross-compiled;
-no Windows box here) as of this note - both clean. `swift test` output didn't render in the shell that
-attempted it, and the cross-compiled Rust test binary couldn't be run without a working Wine setup, so
-re-run both before relying on test coverage. Mac users must run the app built from *this* branch, not
-the pre-merge `main`, for interop (moot now that `windows` has been merged in).
+**Not yet compiled**: the click-to-open received-letter changes to `Runtime.swift`, `Overlay/
+OverlayView.swift`, `Pet/Courier.swift`, `UI/StatusItem.swift` and `Tests/ClaudePetTests/
+CourierTests.swift` were written on the Windows dev box, which has no Swift toolchain — **none of them
+have been through `swift build` or `swift test`**. Do both on a Mac before relying on macOS↔Windows
+messaging. (An earlier note claimed the horse/mail + transport-`stop()` carve-out had been
+`swift build`-verified on a Mac; that was a prior session's claim about `546aa0c`-era code and does
+not cover anything in this change.) The Windows (Rust) side of this change *is* built and tested —
+`cargo test`, 46 passing — and was run on a real desktop.
 
 ---
 
@@ -159,24 +166,32 @@ at `EXPRESS_SPEED_MULT` × courier speed. The receiving screen's visitor pet alw
 rides the horse when the delivery was express. `FrameSprite.carry_mail` / `.on_horse` /
 `.horse_frame` drive `main::draw_actor` (horse under → pet → mail over).
 
-**Receiving a letter (windows-branch UX, diverges from mac deliberately)**: the mac app auto-opens
-the letter window on receive (`dc69ae9`); the windows port does *not*. The inbound visitor does a
-short "touch and go" handoff (`courier::HANDOFF_DURATION` cut 2.2s → 0.5s here) and leaves straight
-away; the resident pet then **carries the envelope** (`Runtime::unread`, a `VecDeque<PetMessage>`;
-`FrameSprite.carry_mail` stays true while it's non-empty) and a content-free "a letter from X ✉"
-bubble shows for ~3s. Clicking the envelope — `runtime::cursor_over_mail`, a padded rect from the
-shared `runtime::mail_rect` (also the draw origin, so hit test and sprite can't drift), OR'd into the
-overlay hit test and the `WM_LBUTTON*` branches in `main.rs` via `App::mail_down` — posts
-`WM_APP_READ_LETTER`, which opens `letter.rs`'s themed reader (`App::modal_open` guards re-entrancy
-and forces the overlay click-through while it's up). "Read Letter…" in the tray/right-click menu
-(`tray::ID_READ_LETTER`, shown only when `has_unread`) is the same path, and the escape hatch for a
-docked pet. `letter.rs` mirrors the *read* mode of `UI/LetterWindow.swift` — paper fill, clay border
-+ wax-seal dot, serif "A Letter Arrived" title, "From:" line, body, plain **OK** + clay-pill
-**Reply** (inline: toggles the body editable, retitles, sends on the same window) — but keeps a
-normal captioned Win32 frame rather than AppKit's borderless rounded panel. `Runtime::unread` is
-in-memory only: `update.rs`'s swap-and-relaunch (auto-update is on by default) silently drops an
-unread letter. Debug builds only: `CLAUDEPET_FAKE_LETTER=1` seeds one unread letter at startup so
-`letter.rs` can be eyeballed with `cargo run`.
+**Receiving a letter — same UX on both platforms.** A delivered letter no longer pops a reader open
+(the mac app used to, `dc69ae9`). The inbound visitor does a short "touch and go" handoff
+(`HANDOFF_DURATION` / `Courier.handoffDuration` cut 2.2s → 0.5s on both) and leaves straight away; the
+resident pet then **carries the envelope** as the "click me" cue and a content-free "a letter from X
+✉" bubble shows briefly. Clicking the pet opens the oldest unread letter; "Read Letter…" in the
+tray / right-click menu (shown only when one's waiting) is the same path.
+
+- **Windows** (`src-win/`): `Runtime::unread` (a `VecDeque<PetMessage>`); `FrameSprite.carry_mail`
+  stays true while it's non-empty. The click target is the envelope specifically —
+  `runtime::cursor_over_mail`, a padded rect from the shared `runtime::mail_rect` (also the draw
+  origin, so hit test and sprite can't drift), OR'd into the overlay hit test and the `WM_LBUTTON*`
+  branches via `App::mail_down` — which posts `WM_APP_READ_LETTER` to open `letter.rs`'s themed reader
+  (`App::modal_open` guards re-entrancy and forces overlay click-through while it's up). `tray::
+  ID_READ_LETTER` is the docked-pet escape hatch. `letter.rs` mirrors the *read* mode of
+  `UI/LetterWindow.swift` — paper fill, clay border + wax-seal dot, serif "A Letter Arrived" title,
+  "From:" line, body, plain **OK** + clay-pill **Reply** (inline: toggles the body editable,
+  retitles, sends on the same window) — in a normal captioned Win32 frame rather than AppKit's
+  borderless rounded panel. `Runtime::unread` is in-memory only: `update.rs`'s swap-and-relaunch
+  silently drops an unread letter. Debug builds only: `CLAUDEPET_FAKE_LETTER=1` seeds one at startup
+  so `letter.rs` can be eyeballed with `cargo run`.
+- **macOS** (`Sources/`, carve-out): `Runtime.unreadLetters: [PetMessage]`; `updateUnreadMailProp`
+  keeps the existing `MailSprite` `CourierProp` beside the pet while it's non-empty. The whole pet is
+  the click target (`OverlayView` gains `onClickUp` — mouse-up within 4px of mouse-down, i.e. not a
+  drag, mirroring the Windows `!app.moved` check; `handlePet` yields the click to the letter while one
+  waits). `openUnreadLetter` runs the existing `LetterWindow(message:)` reader modally, so the reader
+  itself is unchanged. `unreadLetters` is in-memory only.
 
 ## Build / run / test
 

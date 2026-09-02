@@ -3,7 +3,7 @@ members = ["installer"]
 
 [package]
 name = "claudepet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "ClaudePet - a desktop pet for Windows (Rust port of the macOS app)"
 license = "MIT"

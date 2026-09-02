@@ -48,4 +48,22 @@ enum ScreenGeometry {
     static func bottomWalkLine(on screen: NSScreen) -> CGFloat {
         screen.visibleFrame.minY
     }
+
+    /// Converts a rect in top-left-origin global coordinates (as reported by
+    /// `CGWindowListCopyWindowInfo`'s `kCGWindowBounds` and by the Accessibility
+    /// API's `kAXPositionAttribute`/`kAXSizeAttribute`) into AppKit's
+    /// bottom-left-origin space. `nil` if there's no primary screen to flip
+    /// against.
+    ///
+    /// `nonisolated` so `DistractionDetector` can call it from its background
+    /// polling task - `NSScreen.screens` is a read-only query safe off-main.
+    nonisolated static func appKitRect(fromTopLeft rect: CGRect) -> CGRect? {
+        guard let primaryHeight = NSScreen.screens.first?.frame.height else { return nil }
+        return CGRect(
+            x: rect.minX,
+            y: primaryHeight - rect.minY - rect.height,
+            width: rect.width,
+            height: rect.height
+        )
+    }
 }

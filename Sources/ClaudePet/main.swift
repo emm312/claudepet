@@ -18,6 +18,28 @@ if CommandLine.arguments.contains("--export-sprites") {
     exit(0)
 }
 
+// `ClaudePet --debug-distraction` traces the Reels-detection flow step by step
+// against whatever's actually frontmost, then exits - for diagnosing why the
+// rampage isn't triggering without guessing. Focus your browser before/during
+// the countdown.
+let debugFlags = ["--debug-distraction", "--debug-ax-tree", "--debug-ax-windows"]
+if debugFlags.contains(where: CommandLine.arguments.contains) {
+    let detector = DistractionDetector()
+    for remaining in stride(from: 3, through: 1, by: -1) {
+        print("Checking in \(remaining)... (make sure your browser is frontmost)")
+        Thread.sleep(forTimeInterval: 1)
+    }
+    print("---")
+    if CommandLine.arguments.contains("--debug-ax-tree") {
+        print(detector.debugDumpTree())
+    } else if CommandLine.arguments.contains("--debug-ax-windows") {
+        print(detector.debugListWindows())
+    } else {
+        print(detector.debugSighting())
+    }
+    exit(0)
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: Runtime?
 

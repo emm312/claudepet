@@ -59,7 +59,11 @@ enum Dialogue {
 
     // MARK: - Reels rage
 
-    private static let angryLines = [
+    /// The very first thing the pet says on spotting Reels - always this line,
+    /// regardless of tier, per the user's explicit ask.
+    private static let warmupLine = "stop wasting ur bandwidth"
+
+    private static let naggingLines = [
         "this is not a value-add activity",
         "let's align on priorities, not Reels",
         "that's outside our core competency",
@@ -70,15 +74,27 @@ enum Dialogue {
         "circle back to your OKRs",
         "I will not be de-prioritized",
         "put the phone down, it's not on the roadmap",
+        "stop wasting ur bandwidth, seriously",
+        "this bandwidth could be better allocated",
+    ]
+
+    private static let furiousLines = [
+        "STOP WASTING UR BANDWIDTH",
+        "THIS IS NOT A VALUE-ADD ACTIVITY",
+        "PUT THE PHONE DOWN",
+        "I WILL NOT BE DE-PRIORITIZED",
+        "CIRCLE BACK TO YOUR OKRS RIGHT NOW",
     ]
 
     private static var lastAngryLine: String?
 
-    static func angryLine() -> String {
-        var candidate = angryLines.randomElement() ?? "GET OFF REELS"
+    static func angryLine(tier: Rampage.Tier) -> String {
+        if tier == .warmup { return warmupLine }
+        let pool = tier == .furious ? furiousLines : naggingLines
+        var candidate = pool.randomElement() ?? warmupLine
         var attempts = 0
         while candidate == lastAngryLine && attempts < 5 {
-            candidate = angryLines.randomElement() ?? candidate
+            candidate = pool.randomElement() ?? candidate
             attempts += 1
         }
         lastAngryLine = candidate

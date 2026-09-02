@@ -59,6 +59,10 @@ pub struct Courier {
     handoff_end_time: f64,
     last_tick_date: f64,
     speed: f64,
+    /// Set when an ack arrives during `Departing`, so `Away` is skipped on
+    /// entry instead of making a delivery that already succeeded wait out the
+    /// full timeout.
+    ack_pending: bool,
 }
 
 impl Courier {
@@ -114,6 +118,7 @@ impl Courier {
             handoff_end_time: f64::NEG_INFINITY,
             last_tick_date: now,
             speed: SPEED * speed_mult.max(0.1),
+            ack_pending: false,
         }
     }
 
@@ -155,8 +160,12 @@ impl Courier {
             Phase::Departing => {
                 self.move_toward(self.off_screen_x, dt);
                 if self.reached(self.off_screen_x) {
-                    self.phase = Phase::Away;
-                    self.away_deadline = now + AWAY_TIMEOUT;
+                    if self.ack_pending {
+                        self.phase = Phase::Returning;
+                    } else {
+                        self.phase = Phase::Away;
+                        self.away_deadline = now + AWAY_TIMEOUT;
+                    }
                 }
             }
             Phase::Away => {
@@ -194,10 +203,23 @@ impl Courier {
     }
 
     /// Called once the peer's ack arrives, so the outbound pet doesn't sit
-    /// waiting out the full timeout when delivery actually succeeded.
+    /// waiting out the full timeout when delivery actually succeeded. An ack
+    /// that lands while still `Departing` (a fast LAN can beat the walk-off
+    /// animation) is recorded and applied the moment `Away` would begin.
     pub fn received_ack(&mut self) {
-        if self.phase == Phase::Away {
-            self.phase = Phase::Returning;
+        match self.phase {
+            Phase::Away => self.phase = Phase::Returning,
+            Phase::Departing => self.ack_pending = true,
+            _ => {}
+        }
+    }
+
+    /// Pushes the away-timeout deadline further out (used while a large
+    /// attachment is still being pulled by the receiver, so a slow transfer
+    /// doesn't fire the "message bounced" bubble).
+    pub fn extend_deadline(&mut self, new_deadline: f64) {
+        if self.phase == Phase::Away && new_deadline > self.away_deadline {
+            self.away_deadline = new_deadline;
         }
     }
 

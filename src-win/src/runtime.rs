@@ -12,7 +12,7 @@ use crate::pet::courier::{Courier, Phase};
 use crate::pet::dialogue::Dialogue;
 use crate::pet::pet_state::{now_secs, PetState, PetStateStore};
 use crate::pet::sprites::{CLIPS, GRID_SIZE};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 pub const ZOOM: i32 = 5;
 pub const SPRITE_PX: i32 = GRID_SIZE as i32 * ZOOM; // 80
@@ -80,6 +80,12 @@ pub fn mail_rect(s: &FrameSprite) -> (i32, i32, i32, i32) {
     (mx, my, mw, mh)
 }
 
+/// One queued send: a fully-built message plus the peers it should go to.
+struct OutboundJob {
+    message: PetMessage,
+    recipients: Vec<String>,
+}
+
 pub struct Runtime {
     pub state: PetState,
     brain: Brain,
@@ -120,8 +126,19 @@ pub struct Runtime {
     // pet-to-pet messaging
     outbound: Option<Courier>,
     outbound_msg_id: Option<String>,
-    outbound_ack: bool,
+    /// Recipients that haven't acked the in-flight outbound message yet.
+    outbound_pending: HashSet<String>,
+    /// Recipients that have acked the in-flight outbound message.
+    outbound_acked: HashSet<String>,
     outbound_express: bool,
+    /// The datagram(s) for the in-flight trip are sent once, at `Away` entry -
+    /// not at compose time - so a courier already `Departing` never races a
+    /// same-tick ack. Cleared once sent.
+    outbound_message: Option<PetMessage>,
+    /// Sends queued while a previous trip is in flight. One `Courier` trip per
+    /// message, regardless of recipient count, so a second `send_message`
+    /// while away is queued rather than silently dropped.
+    outbound_queue: VecDeque<OutboundJob>,
     inbound: Option<Courier>,
     inbound_msg: Option<PetMessage>,
     inbound_handed_off: bool,
@@ -190,8 +207,11 @@ impl Runtime {
             bar_off_y: 0.0,
             outbound: None,
             outbound_msg_id: None,
-            outbound_ack: false,
+            outbound_pending: HashSet::new(),
+            outbound_acked: HashSet::new(),
             outbound_express: false,
+            outbound_message: None,
+            outbound_queue: VecDeque::new(),
             inbound: None,
             inbound_msg: None,
             inbound_handed_off: false,
@@ -602,33 +622,62 @@ impl Runtime {
 
     // ---- messaging ---------------------------------------------------
 
-    pub fn send_message(&mut self, text: &str, peer: &str, express: bool) {
-        self.send_message_at(text, peer, express, now_secs());
+    pub fn send_message(&mut self, text: &str, peers: &[String], express: bool) {
+        self.send_message_at(text, peers, express, now_secs());
     }
 
-    pub fn send_message_at(&mut self, text: &str, peer: &str, express: bool, now: f64) {
-        if self.outbound.is_some() {
+    /// Queues a message to one or more peers. One `Courier` trip carries it to
+    /// every recipient; a send made while a previous trip is still in flight is
+    /// queued rather than dropped - it starts as soon as the courier is free
+    /// (`start_next_outbound_if_idle`, called from `tick_messaging`).
+    pub fn send_message_at(&mut self, text: &str, peers: &[String], express: bool, now: f64) {
+        if peers.is_empty() {
             return;
         }
+        let edge = self.outbound_exit_edge();
+        let message = PetMessage::deliver(text.to_string(), self.local_name.clone(), edge, express);
+        self.outbound_queue.push_back(OutboundJob {
+            message,
+            recipients: peers.to_vec(),
+        });
+        self.start_next_outbound_if_idle(now);
+    }
+
+    fn outbound_exit_edge(&self) -> crate::net::Edge {
         let center_x = self.pet_x + SPRITE_PX as f64 / 2.0;
         let area = geometry::work_area_containing(center_x, self.pet_y + SPRITE_PX as f64 / 2.0);
         let home_x = self.pet_x;
         let left_gap = home_x - area.left;
         let right_gap = area.right - home_x - SPRITE_PX as f64;
-        let edge = if left_gap < right_gap {
+        if left_gap < right_gap {
             crate::net::Edge::Left
         } else {
             crate::net::Edge::Right
+        }
+    }
+
+    fn start_next_outbound_if_idle(&mut self, now: f64) {
+        if self.outbound.is_some() {
+            return;
+        }
+        let Some(job) = self.outbound_queue.pop_front() else {
+            return;
         };
+        let express = job.message.express;
+        let edge = job.message.exit_edge;
+        let center_x = self.pet_x + SPRITE_PX as f64 / 2.0;
+        let area = geometry::work_area_containing(center_x, self.pet_y + SPRITE_PX as f64 / 2.0);
+        let home_x = self.pet_x;
         let off_screen_x = match edge {
             crate::net::Edge::Right => area.right + SPRITE_PX as f64,
             crate::net::Edge::Left => area.left - SPRITE_PX as f64,
         };
 
-        let message = PetMessage::deliver(text.to_string(), self.local_name.clone(), edge, express);
-        self.outbound_msg_id = Some(message.id.clone());
-        self.outbound_ack = false;
+        self.outbound_msg_id = Some(job.message.id.clone());
+        self.outbound_pending = job.recipients.iter().cloned().collect();
+        self.outbound_acked = HashSet::new();
         self.outbound_express = express;
+        self.outbound_message = Some(job.message);
         let mult = if express { EXPRESS_SPEED_MULT } else { 1.0 };
         self.outbound = Some(Courier::outbound(home_x, home_x, off_screen_x, edge, now, mult));
         self.brain.set_falling(false);
@@ -638,14 +687,14 @@ impl Runtime {
             self.dialogue.depart_line().to_string()
         };
         self.set_bubble(line, 3.0);
-        self.transport.send(&message, peer);
     }
 
-    fn handle_received(&mut self, message: PetMessage, _from: String, now: f64) {
+    fn handle_received(&mut self, message: PetMessage, from: String, now: f64) {
         match message.kind {
             Kind::Ack => {
                 if self.outbound_msg_id.as_deref() == Some(message.id.as_str()) {
-                    self.outbound_ack = true;
+                    self.outbound_pending.remove(&from);
+                    self.outbound_acked.insert(from);
                     if let Some(c) = &mut self.outbound {
                         c.received_ack();
                     }
@@ -656,6 +705,10 @@ impl Runtime {
                 if self.docked || self.dock_in.is_some() {
                     self.undock();
                 }
+                // Ack right away - the sender's timeout races real time, not the
+                // visitor's walk-in/handoff/walk-out animation, so a slow or wide
+                // screen no longer makes a delivered letter look "bounced".
+                self.transport.send(&message.make_ack(&self.local_name), &from);
                 self.pending.push_back(message);
                 self.start_next_delivery_if_idle(now);
             }
@@ -703,22 +756,40 @@ impl Runtime {
             let was_away = courier.is_away();
             courier.tick(now);
             match courier.phase() {
-                Phase::Departing | Phase::Returning => {
-                    if was_away && !self.outbound_ack {
+                Phase::Departing => {
+                    self.pet_x = courier.x();
+                    suppress = true;
+                }
+                Phase::Returning => {
+                    if was_away && self.outbound_acked.is_empty() {
                         let line = self.dialogue.delivery_failed_line().to_string();
                         self.bubble_text = Some(line);
+                        self.bubble_until = now + 3.0;
+                    } else if was_away && !self.outbound_pending.is_empty() {
+                        let missed: Vec<&str> = self.outbound_pending.iter().map(String::as_str).collect();
+                        self.bubble_text = Some(format!("couldn't reach {}", missed.join(", ")));
                         self.bubble_until = now + 3.0;
                     }
                     self.pet_x = courier.x();
                     suppress = true;
                 }
                 Phase::Away => {
+                    // Send exactly once, right as the courier arrives off-screen -
+                    // not at compose time - so an ack that beats the walk-off
+                    // animation is impossible and every recipient is queried at
+                    // the same moment (the away-timeout is the same for all).
+                    if let Some(message) = self.outbound_message.take() {
+                        for peer in self.outbound_pending.iter().cloned().collect::<Vec<_>>() {
+                            self.transport.send(&message, &peer);
+                        }
+                    }
                     suppress = true;
                 }
                 Phase::Done => {
                     self.outbound = None;
                     self.outbound_msg_id = None;
                     self.brain.set_falling(false);
+                    self.start_next_outbound_if_idle(now);
                 }
                 _ => {}
             }
@@ -738,9 +809,9 @@ impl Runtime {
             );
             match courier.phase() {
                 Phase::Done => {
-                    if let Some(m) = &self.inbound_msg {
-                        self.transport.send(&m.make_ack(), &m.sender_name);
-                    }
+                    // The ack itself was already sent the moment the delivery
+                    // arrived (`handle_received`) - the visitor's walk/handoff
+                    // is purely cosmetic and no longer gates it.
                     finished_inbound = true;
                 }
                 Phase::Handing if !self.inbound_handed_off => {
@@ -980,7 +1051,7 @@ mod tests {
             self.outbound.as_ref().map(|c| c.phase())
         }
         fn t_ack(&self) -> bool {
-            self.outbound_ack
+            self.outbound_pending.is_empty() && !self.outbound_acked.is_empty()
         }
     }
 
@@ -999,21 +1070,22 @@ mod tests {
         let fake = FakeTransport::with_peers(&["PeerX"]);
         let mut rt = new_rt(&fake);
 
-        rt.send_message_at("ship it", "PeerX", false, 1000.0);
+        rt.send_message_at("ship it", &["PeerX".to_string()], false, 1000.0);
+
+        rt.tick_at(1000.0 + FAR); // courier walks off-screen -> Away, sends the datagram
+        assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
+
         let sent = fake.sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0.kind, Kind::Deliver);
         assert_eq!(sent[0].1, "PeerX");
         let delivered = sent[0].0.clone();
 
-        rt.tick_at(1000.0 + FAR); // courier walks off-screen -> Away
-        assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
-
         // The peer acks.
         fake.inbox
             .lock()
             .unwrap()
-            .push_back((delivered.make_ack(), "PeerX".into()));
+            .push_back((delivered.make_ack("PeerX"), "PeerX".into()));
         rt.tick_at(1000.0 + FAR + 0.5);
 
         assert!(rt.t_ack(), "ack should have been recorded");
@@ -1033,7 +1105,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["PeerX"]);
         let mut rt = new_rt(&fake);
 
-        rt.send_message_at("hello?", "PeerX", false, 1000.0);
+        rt.send_message_at("hello?", &["PeerX".to_string()], false, 1000.0);
         rt.tick_at(1000.0 + FAR); // -> Away, deadline = (1000+FAR) + 15
         assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
 

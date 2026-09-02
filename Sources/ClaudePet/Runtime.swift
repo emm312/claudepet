@@ -64,6 +64,10 @@ final class Runtime {
     /// only meaningful while `outboundCourier` is active.
     private var outboundPendingPeers: Set<String> = []
     private var outboundAckedPeers: Set<String> = []
+    /// Sends made while a previous trip is in flight - one `Courier` trip per
+    /// message regardless of recipient count, so a second `sendMessage` while
+    /// away is queued rather than silently dropped.
+    private var outboundQueue: [(PetMessage, [String])] = []
     /// Express (horse) delivery - only meaningful while `outboundCourier` is
     /// active. windows-branch feature; see HorseSprite.swift/MailSprite.swift.
     private var outboundExpress = false
@@ -275,34 +279,56 @@ final class Runtime {
     /// Ignored if the pet is already out delivering something, or if `peers`
     /// is empty.
     func sendMessage(_ text: String, to peers: [String], express: Bool = false) {
-        guard outboundCourier == nil, !peers.isEmpty else { return }
+        guard !peers.isEmpty else { return }
+        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: outboundExitEdge(), express: express)
+        outboundQueue.append((message, peers))
+        startNextOutboundIfIdle()
+    }
+
+    private func outboundExitEdge() -> PetMessage.Edge {
+        let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
+            ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let homeX = window.frame.origin.x
+        return (homeX - screen.minX) < (screen.maxX - homeX - window.frame.width) ? .left : .right
+    }
+
+    /// Starts the next queued send once the courier is free. A send made while
+    /// a previous trip is in flight is queued here (`sendMessage` above)
+    /// rather than silently dropped, and starts the moment the courier lands.
+    private func startNextOutboundIfIdle() {
+        guard outboundCourier == nil, !outboundQueue.isEmpty else { return }
+        let (message, peers) = outboundQueue.removeFirst()
 
         let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
             ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         let homeX = window.frame.origin.x
-        let edge: PetMessage.Edge = (homeX - screen.minX) < (screen.maxX - homeX - window.frame.width) ? .left : .right
+        let edge = message.exitEdge
         let offScreenX = edge == .right ? screen.maxX + window.frame.width : screen.minX - window.frame.width
 
-        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: edge, express: express)
         outboundMessageID = message.id
         outboundMessage = message
         outboundRecipients = peers
         outboundPendingPeers = Set(peers)
         outboundAckedPeers = []
-        outboundExpress = express
+        outboundExpress = message.express
         outboundGroundY = window.frame.origin.y
-        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: express)
+        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: message.express)
         brain.setFalling(false)
-        showBubble(force: express ? "saddling up - taking this one express" : Dialogue.departLine())
+        showBubble(force: message.express ? "saddling up - taking this one express" : Dialogue.departLine())
     }
 
     private func handleReceived(_ message: PetMessage, from peerName: String) {
         switch message.kind {
         case .ack:
             guard message.id == outboundMessageID else { return }
+            outboundPendingPeers.remove(peerName)
             outboundAckedPeers.insert(peerName)
             outboundCourier?.receivedAck()
         case .deliver:
+            // Ack right away - the sender's timeout races real time, not the
+            // visitor's walk-in/handoff/walk-out animation, so a slow or wide
+            // screen no longer makes a delivered letter look "bounced".
+            transport.send(message.makeAck(from: MultipeerLink.localDisplayName), to: peerName)
             pendingDeliveries.append(message)
             startNextDeliveryIfIdle()
         }
@@ -345,7 +371,12 @@ final class Runtime {
             case .departing, .returning:
                 if wasAway {
                     window.orderFrontRegardless() // just started walking back in
-                    if outboundAckedPeers.isEmpty { showBubble(force: Dialogue.deliveryFailedLine()) }
+                    if outboundAckedPeers.isEmpty {
+                        showBubble(force: Dialogue.deliveryFailedLine())
+                    } else if !outboundPendingPeers.isEmpty {
+                        let missed = outboundPendingPeers.sorted().joined(separator: ", ")
+                        showBubble(force: "couldn't reach \(missed)")
+                    }
                 }
                 var origin = window.frame.origin
                 origin.x = courier.x
@@ -375,6 +406,7 @@ final class Runtime {
                 outboundMessage = nil
                 outboundRecipients = []
                 brain.setFalling(false)
+                startNextOutboundIfIdle()
             default:
                 break
             }
@@ -396,9 +428,9 @@ final class Runtime {
             visitor.render(anim: courier.anim, facingRight: courier.facingRight, dt: dt)
             updateVisitorProps(x: courier.x, express: courier.express, facingRight: courier.facingRight, dt: dt)
             if courier.phase == .done {
-                if let message = inboundMessage {
-                    transport.send(message.makeAck(), to: message.senderName)
-                }
+                // The ack itself was already sent the moment the delivery
+                // arrived (`handleReceived`) - the visitor's walk/handoff is
+                // purely cosmetic and no longer gates it.
                 visitor.dismiss()
                 self.visitor = nil
                 inboundCourier = nil

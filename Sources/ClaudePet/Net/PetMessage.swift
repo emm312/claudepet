@@ -60,8 +60,11 @@ nonisolated struct PetMessage: Codable, Sendable {
     }
 
     /// The ack for a given delivery - correlates by `id` so a stray/duplicate ack
-    /// can't resolve the wrong outbound courier.
-    func makeAck() -> PetMessage {
-        PetMessage(id: id, kind: .ack, text: "", senderName: senderName, exitEdge: exitEdge, sentAt: Date(), express: express)
+    /// can't resolve the wrong outbound courier. `senderName` is the *acker's*
+    /// own name, not the original sender's - cloning the delivery's `senderName`
+    /// made the sender upsert its own name into its peer map on receipt instead
+    /// of learning the acker's address.
+    func makeAck(from localName: String) -> PetMessage {
+        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express)
     }
 }

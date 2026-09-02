@@ -35,6 +35,16 @@ pub enum Kind {
     Ack,
 }
 
+/// A file offered alongside a delivery. `port` is the sender's `FileServer` TCP
+/// port on the same address the datagram arrived from; the receiver pulls the
+/// bytes over a short-lived connection to `(source_ip, port)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    pub size: u64,
+    pub port: u16,
+}
+
 /// Wire format for pet-to-pet messages, JSON-encoded over a `PeerTransport`.
 /// Field names match the Swift struct (`senderName`, `exitEdge`, `sentAt`) so the
 /// payload shape is identical; `sentAt` is plain Unix seconds here rather than
@@ -55,6 +65,10 @@ pub struct PetMessage {
     /// older senders (and the macOS side before it adds a send toggle) decode.
     #[serde(default)]
     pub express: bool,
+    /// Present when this delivery carries a file. Optional on the wire so
+    /// pre-attachment senders on either platform still decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
 }
 
 impl PetMessage {
@@ -67,20 +81,25 @@ impl PetMessage {
             exit_edge,
             sent_at: crate::pet::pet_state::now_secs(),
             express,
+            attachment: None,
         }
     }
 
     /// The ack for a given delivery - correlates by `id` so a stray/duplicate ack
-    /// can't resolve the wrong outbound courier.
-    pub fn make_ack(&self) -> PetMessage {
+    /// can't resolve the wrong outbound courier. `senderName` on the ack is the
+    /// *acker's* own name, not the original sender's - the old behavior of
+    /// cloning the delivery's `senderName` made the sender upsert its own name
+    /// into its peer map on receipt instead of learning the acker's address.
+    pub fn make_ack(&self, local_name: &str) -> PetMessage {
         PetMessage {
             id: self.id.clone(),
             kind: Kind::Ack,
             text: String::new(),
-            sender_name: self.sender_name.clone(),
+            sender_name: local_name.to_string(),
             exit_edge: self.exit_edge,
             sent_at: crate::pet::pet_state::now_secs(),
             express: self.express,
+            attachment: None,
         }
     }
 }
@@ -152,11 +171,11 @@ mod tests {
     #[test]
     fn ack_preserves_id_and_clears_text() {
         let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false);
-        let ack = m.make_ack();
+        let ack = m.make_ack("DeskB");
         assert_eq!(ack.id, m.id);
         assert_eq!(ack.kind, Kind::Ack);
         assert!(ack.text.is_empty());
-        assert_eq!(ack.sender_name, "DeskA");
+        assert_eq!(ack.sender_name, "DeskB");
         assert_eq!(ack.exit_edge, Edge::Right);
     }
 
@@ -201,6 +220,7 @@ mod tests {
             exit_edge: Edge::Left,
             sent_at: 1_700_000_000.5,
             express: true,
+            attachment: None,
         };
         assert_eq!(serde_json::to_string(&same).unwrap(), json);
 

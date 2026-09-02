@@ -19,6 +19,10 @@ final class LanUdpLink: PeerTransport {
 
     private var listener: NWListener?
     private var browser: NWBrowser?
+    /// The listener's bound UDP port, once known. Every outbound `NWConnection`
+    /// is pinned to originate from this same port (`outboundParameters`) - see
+    /// the note on `send` below for why that matters.
+    private var listenerPort: NWEndpoint.Port?
 
     /// Discovered peers: display name -> resolvable Bonjour endpoint.
     private var endpoints: [String: NWEndpoint] = [:]
@@ -59,6 +63,28 @@ final class LanUdpLink: PeerTransport {
             // `start()`; if the Mac never shows up in the Windows peer list,
             // switch to `NWListener(service:using:)` instead.
             listener.service = NWListener.Service(name: localName, type: Self.serviceType)
+            listener.stateUpdateHandler = { [weak self] state in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    switch state {
+                    case .ready:
+                        self.listenerPort = listener.port
+                    case .failed, .cancelled:
+                        // Without a restart here, a listener that dies after
+                        // start() (sleep/wake, interface change) left the pet
+                        // silently unable to receive anything - forever, with
+                        // no user-visible sign - while the browser side
+                        // already had this self-heal.
+                        guard self.listener === listener else { return }
+                        self.listener = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                            self?.startListener()
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
             listener.newConnectionHandler = { [weak self] connection in
                 connection.start(queue: .main)
                 // Network.framework doesn't statically know this closure runs
@@ -117,13 +143,25 @@ final class LanUdpLink: PeerTransport {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                var map: [String: NWEndpoint] = [:]
+                var seen = Set<String>()
                 for result in results {
                     if case let .service(name, _, _, _) = result.endpoint {
-                        map[name] = result.endpoint
+                        seen.insert(name)
+                        // Only fill in peers we don't already have an endpoint
+                        // for - never overwrite one learned from a live
+                        // datagram's source address (`handle(_:from:)`), which
+                        // is proven reachable, with the browse's unresolved
+                        // advertised endpoint.
+                        if self.endpoints[name] == nil {
+                            self.endpoints[name] = result.endpoint
+                        }
                     }
                 }
-                self.endpoints = map
+                // Drop only peers the browse no longer sees at all - a
+                // snapshot replace here would also discard an endpoint learned
+                // from a live datagram's source address whenever a routine
+                // browse refresh fires in between.
+                self.endpoints = self.endpoints.filter { seen.contains($0.key) }
                 self.onPeersChanged?(self.peerNames)
             }
         }
@@ -176,6 +214,19 @@ final class LanUdpLink: PeerTransport {
         }
         guard let data = try? JSONEncoder().encode(LanWireMessage(message)) else { return }
 
+        // Every outbound datagram (deliver, ack) must leave from the *same*
+        // source port the listener is bound to - otherwise each `NWConnection`
+        // below picks a fresh ephemeral port, and the peer's "upsert the source
+        // address of every inbound datagram" reachability tracking
+        // (`handle(_:from:)` here, the Rust side's `mdns_udp.rs` recv thread)
+        // keeps overwriting a working address with one that's already closed.
+        // That was the primary cause of acks silently vanishing.
+        let params = NWParameters.udp
+        if let port = listenerPort {
+            params.requiredLocalEndpoint = .hostPort(host: "::", port: port)
+            params.allowLocalEndpointReuse = true
+        }
+
         // `endpoint` is an unresolved Bonjour `.service` endpoint - the browser only
         // ever enumerated its name, it never resolved host/port. Sending immediately
         // after `start()` (the old behavior) fired the send while the connection was
@@ -183,7 +234,7 @@ final class LanUdpLink: PeerTransport {
         // instead of queued - discovery worked but delivery never did. Wait for
         // `.ready` (resolution complete) before handing off data, and log every
         // failure path since none of them surfaced anywhere before.
-        let connection = NWConnection(to: endpoint, using: .udp)
+        let connection = NWConnection(to: endpoint, using: params)
         connection.stateUpdateHandler = { [weak connection] state in
             MainActor.assumeIsolated {
                 guard let connection else { return }

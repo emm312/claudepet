@@ -15,14 +15,42 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const SERVICE_TYPE: &str = "_claudepet._udp.local.";
+/// How long a source address learned from an inbound datagram is trusted over
+/// a freshly mDNS-resolved advertised address.
+const LEARNED_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// A peer's known addresses. `learned` (the source address of its most recent
+/// datagram to us) is preferred while fresh - it's proven reachable right now,
+/// whereas `advertised` (from mDNS `ServiceResolved`) can be a virtual
+/// adapter's address on a multi-homed host, or briefly overwrite a
+/// known-working address with one that isn't. Kept as two fields, rather than
+/// clobbering one on every resolve, so a resolve can never regress a working
+/// send/ack loop.
+#[derive(Clone, Copy, Default)]
+struct PeerAddrs {
+    advertised: Option<SocketAddr>,
+    learned: Option<(SocketAddr, Instant)>,
+}
+
+impl PeerAddrs {
+    fn best(&self) -> Option<SocketAddr> {
+        if let Some((addr, at)) = self.learned {
+            if at.elapsed() < LEARNED_TTL {
+                return Some(addr);
+            }
+        }
+        self.advertised
+    }
+}
 
 pub struct MdnsUdpTransport {
     local_name: String,
     socket: UdpSocket,
     udp_port: u16,
-    peers: Arc<Mutex<HashMap<String, SocketAddr>>>,
+    peers: Arc<Mutex<HashMap<String, PeerAddrs>>>,
     inbox: Arc<Mutex<VecDeque<(PetMessage, String)>>>,
     mdns: Option<ServiceDaemon>,
     /// Bumped by `rescan()`; the browse worker re-issues its own `browse()`
@@ -87,9 +115,15 @@ impl MdnsUdpTransport {
         };
         let peers = Arc::clone(&self.peers);
         let inbox = Arc::clone(&self.inbox);
+        let own_name = self.local_name.clone();
+        let shutdown = Arc::clone(&self.shutdown);
+        // A 500ms read timeout, not a blocking recv, so this thread notices
+        // `shutdown` (set by `stop()`) instead of blocking forever - previously
+        // there was no way to exit it, so a stop()->start() cycle doubled it.
+        let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(500)));
         std::thread::spawn(move || {
             let mut buf = [0u8; 64 * 1024];
-            loop {
+            while !shutdown.load(Ordering::SeqCst) {
                 match sock.recv_from(&mut buf) {
                     Ok((n, from)) => {
                         if let Ok(msg) = serde_json::from_slice::<PetMessage>(&buf[..n]) {
@@ -101,11 +135,19 @@ impl MdnsUdpTransport {
                             // resolved to a different IP, or none at all (e.g.
                             // a peer advertising only unscoped link-local v6).
                             // `recv_from` fills in the scope id the OS used,
-                            // which mDNS resolution never provides.
-                            peers.lock().unwrap().insert(sender.clone(), from);
+                            // which mDNS resolution never provides. Never
+                            // record our own name - an ack we sent ourselves
+                            // (loopback discovery quirks) must not show up as
+                            // a peer.
+                            if sender != own_name {
+                                let mut map = peers.lock().unwrap();
+                                let entry = map.entry(sender.clone()).or_default();
+                                entry.learned = Some((from, Instant::now()));
+                            }
                             inbox.lock().unwrap().push_back((msg, sender));
                         }
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => {
                         std::thread::sleep(std::time::Duration::from_millis(200));
                     }
@@ -167,7 +209,10 @@ impl MdnsUdpTransport {
                                 continue;
                             }
                             if let Some(addr) = pick_peer_addr(&info) {
-                                peers.lock().unwrap().insert(name, addr);
+                                // Only the advertised slot - never clobber a
+                                // `learned` address proven reachable by actual
+                                // traffic (see `PeerAddrs`).
+                                peers.lock().unwrap().entry(name).or_default().advertised = Some(addr);
                             }
                         }
                         Ok(ServiceEvent::ServiceRemoved(_ty, fullname)) => {
@@ -267,24 +312,25 @@ impl PeerTransport for MdnsUdpTransport {
     }
 
     fn peer_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.peers.lock().unwrap().keys().cloned().collect();
+        let mut names: Vec<String> = self
+            .peers
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|n| **n != self.local_name)
+            .cloned()
+            .collect();
         names.sort();
         names
     }
 
     fn send(&self, message: &PetMessage, to_peer: &str) {
-        // Unknown peer -> actively re-scan the LAN once and retry after a short
-        // delay. The passive browse can lag reality (peer just relaunched,
-        // worker between subscriptions), and a silent drop here was the old
-        // behavior - the message would vanish with no bubble and no retry. If
-        // the peer is still unknown after the retry we give up and let the
-        // courier's ack-timeout bubble tell the user.
-        if self.peers.lock().unwrap().get(to_peer).is_none() {
-            self.rescan();
-            std::thread::sleep(std::time::Duration::from_millis(300));
-        }
-        let addr = self.peers.lock().unwrap().get(to_peer).copied();
+        // Unknown peer -> ask the browse worker for a refresh; the caller
+        // (`Runtime`, at `Away` entry) retries shortly after rather than this
+        // call blocking the UI thread on a fixed sleep.
+        let addr = self.peers.lock().unwrap().get(to_peer).and_then(PeerAddrs::best);
         let Some(addr) = addr else {
+            self.rescan();
             eprintln!("ClaudePet: dropping message to unknown peer {to_peer}");
             return;
         };
@@ -345,7 +391,10 @@ mod tests {
         b.start_recv_only();
 
         let b_addr: SocketAddr = format!("127.0.0.1:{}", b.udp_port).parse().unwrap();
-        a.peers.lock().unwrap().insert("B".into(), b_addr);
+        a.peers.lock().unwrap().insert(
+            "B".into(),
+            PeerAddrs { advertised: Some(b_addr), learned: None },
+        );
 
         let msg = PetMessage::deliver("ping".into(), "A".into(), Edge::Right, false);
         a.send(&msg, "B");

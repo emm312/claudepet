@@ -40,6 +40,10 @@ final class Courier {
     private var awayDeadline: Date = .distantPast
     private var handoffEndTime: Date = .distantPast
     private var lastTickDate: Date
+    /// Set when an ack arrives during `.departing`, so `.away` is skipped on
+    /// entry instead of making a delivery that already succeeded wait out the
+    /// full timeout.
+    private var ackPending = false
 
     private static let speed: CGFloat = 90 // pt/s - brisker than the normal idle walk
     static let expressSpeedMultiplier: CGFloat = 3.0
@@ -106,8 +110,12 @@ final class Courier {
         case .departing:
             moveToward(offScreenX, dt: dt)
             if reached(offScreenX) {
-                phase = .away
-                awayDeadline = now.addingTimeInterval(Self.awayTimeout)
+                if ackPending {
+                    phase = .returning
+                } else {
+                    phase = .away
+                    awayDeadline = now.addingTimeInterval(Self.awayTimeout)
+                }
             }
         case .away:
             if now >= awayDeadline { phase = .returning }
@@ -132,10 +140,23 @@ final class Courier {
     }
 
     /// Called once the peer's ack arrives, so the outbound pet doesn't sit
-    /// waiting out the full timeout when delivery actually succeeded.
+    /// waiting out the full timeout when delivery actually succeeded. An ack
+    /// that lands while still `.departing` (a fast LAN can beat the walk-off
+    /// animation) is recorded and applied the moment `.away` would begin.
     func receivedAck() {
-        guard phase == .away else { return }
-        phase = .returning
+        switch phase {
+        case .away: phase = .returning
+        case .departing: ackPending = true
+        default: break
+        }
+    }
+
+    /// Pushes the away-timeout deadline further out (used while a large
+    /// attachment is still being pulled by the receiver, so a slow transfer
+    /// doesn't fire the "message bounced" bubble).
+    func extendDeadline(to newDeadline: Date) {
+        guard phase == .away, newDeadline > awayDeadline else { return }
+        awayDeadline = newDeadline
     }
 
     private func moveToward(_ target: CGFloat, dt: TimeInterval) {

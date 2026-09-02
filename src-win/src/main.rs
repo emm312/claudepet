@@ -403,9 +403,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let app = &mut *app_ptr;
                 app.runtime.peer_names_owned()
             };
-            if let Some((text, peer, express)) = compose::present(hwnd, &peers) {
+            if let Some((text, recipients, express)) = compose::present(hwnd, &peers) {
                 let app = &mut *app_ptr;
-                app.runtime.send_message(&text, &peer, express);
+                app.runtime.send_message(&text, &recipients, express);
             }
             LRESULT(0)
         }
@@ -431,7 +431,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             app.modal_open = false;
             app.runtime.pop_unread();
             if let Some(text) = reply {
-                app.runtime.send_message(&text, &msg.sender_name, false);
+                app.runtime.send_message(&text, std::slice::from_ref(&msg.sender_name), false);
             }
             LRESULT(0)
         }

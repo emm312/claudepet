@@ -64,6 +64,18 @@ final class Runtime {
     /// only meaningful while `outboundCourier` is active.
     private var outboundPendingPeers: Set<String> = []
     private var outboundAckedPeers: Set<String> = []
+    /// Mirrors `outboundCourier?.phase == .away` as of the end of the last
+    /// `tickMessaging` call. `Courier.receivedAck()` can flip `.away ->
+    /// .returning` asynchronously (the moment an ack arrives over the
+    /// network, not on the next tick), so a fresh `courier.phase == .away`
+    /// snapshot taken at the top of `tickMessaging` can no longer tell
+    /// "was away last tick" from "already walking back" - it reads `false`
+    /// either way once the ack beat the tick. Keeping the previous tick's
+    /// state here instead of re-deriving it fixes that: the pet's window
+    /// used to never come back on-screen (staying `orderOut` forever) once
+    /// acks started arriving reliably, since the ack-triggered transition
+    /// never passed through the `wasAway` check that shows it again.
+    private var outboundWasAway = false
     /// Sends made while a previous trip is in flight - one `Courier` trip per
     /// message regardless of recipient count, so a second `sendMessage` while
     /// away is queued rather than silently dropped.
@@ -312,6 +324,7 @@ final class Runtime {
         outboundAckedPeers = []
         outboundExpress = message.express
         outboundGroundY = window.frame.origin.y
+        outboundWasAway = false
         outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: message.express)
         brain.setFalling(false)
         showBubble(force: message.express ? "saddling up - taking this one express" : Dialogue.departLine())
@@ -365,8 +378,9 @@ final class Runtime {
         var suppressLocalMovement = false
 
         if let courier = outboundCourier {
-            let wasAway = courier.phase == .away
+            let wasAway = outboundWasAway
             courier.tick(now: now)
+            outboundWasAway = courier.phase == .away
             switch courier.phase {
             case .departing, .returning:
                 if wasAway {

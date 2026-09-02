@@ -12,6 +12,7 @@ mod distraction;
 mod geometry;
 mod layered_window;
 mod ledges;
+mod letter;
 mod net;
 mod pet;
 mod render;
@@ -37,6 +38,7 @@ const TICK_TIMER_ID: usize = 1;
 const UPDATE_APPLY_TIMER_ID: usize = 2;
 const WM_APP_COMPOSE: u32 = WM_APP + 2;
 const WM_APP_UPDATE_READY: u32 = WM_APP + 3;
+const WM_APP_READ_LETTER: u32 = WM_APP + 4;
 const FAST_INTERVAL_MS: u32 = 33; // ~30 fps
 const IDLE_INTERVAL_MS: u32 = 125; // 8 fps
 
@@ -47,6 +49,12 @@ struct App {
     fast: bool,
     mouse_down: bool,
     bar_down: bool,
+    /// A press landed on the pet's carried mail - a click (no drag) opens the
+    /// unread letter.
+    mail_down: bool,
+    /// A letter window is up, pumping its own modal loop. Suppresses pet-hit
+    /// click capture so the overlay doesn't un-transparent itself underneath it.
+    modal_open: bool,
     moved: bool,
     down_pos: POINT,
     pending_update: Option<(std::path::PathBuf, String)>,
@@ -103,6 +111,8 @@ fn main() {
             fast: false,
             mouse_down: false,
             bar_down: false,
+            mail_down: false,
+            modal_open: false,
             moved: false,
             down_pos: POINT::default(),
             pending_update: None,
@@ -238,12 +248,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
 
             // Per-pixel hit test: only capture the mouse when it's over an
-            // opaque pet pixel, the orange bar, or a drag is in progress.
+            // opaque pet pixel, the carried mail, the orange bar, or a drag is in
+            // progress. While a letter window is modal, stay fully click-through
+            // so the overlay doesn't keep grabbing the cursor under it.
             let c = cursor_pos();
-            let over = app.runtime.is_dragging()
-                || app.bar_down
-                || app.runtime.cursor_over_bar(c.x, c.y)
-                || app.runtime.cursor_over_pet(c.x, c.y);
+            let over = !app.modal_open
+                && (app.runtime.is_dragging()
+                    || app.bar_down
+                    || app.mail_down
+                    || app.runtime.cursor_over_bar(c.x, c.y)
+                    || app.runtime.cursor_over_mail(c.x, c.y)
+                    || app.runtime.cursor_over_pet(c.x, c.y));
             app.window.set_click_through(!over);
 
             render_frame(app);
@@ -253,20 +268,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_LBUTTONDOWN => {
             let c = cursor_pos();
             let shift = (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0;
-            let (over_bar, over_pet) = {
+            let (over_bar, over_pet, over_mail) = {
                 let app = &*app_ptr;
                 (
                     app.runtime.cursor_over_bar(c.x, c.y),
                     app.runtime.cursor_over_pet(c.x, c.y),
+                    app.runtime.cursor_over_mail(c.x, c.y),
                 )
             };
             // Shift + click opens the same menu as a two-finger / right click.
-            if shift && (over_bar || over_pet) {
+            if shift && (over_bar || over_pet || over_mail) {
                 show_menu(app_ptr, hwnd);
                 return LRESULT(0);
             }
             let app = &mut *app_ptr;
-            if over_bar {
+            if over_mail {
+                // The envelope sits on top of the pet - a plain click opens the
+                // letter, so it wins over petting / dragging.
+                app.mail_down = true;
+                app.moved = false;
+                app.down_pos = c;
+                SetCapture(hwnd);
+            } else if over_bar {
                 app.bar_down = true;
                 app.moved = false;
                 app.down_pos = c;
@@ -283,23 +306,34 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_MOUSEMOVE => {
             let app = &mut *app_ptr;
-            if app.mouse_down || app.bar_down {
+            if app.mouse_down || app.bar_down || app.mail_down {
                 let c = cursor_pos();
                 if (c.x - app.down_pos.x).abs() > 3 || (c.y - app.down_pos.y).abs() > 3 {
                     app.moved = true;
                 }
                 if app.bar_down {
                     app.runtime.bar_drag_to(c.x, c.y);
-                } else {
+                    render_frame(app);
+                } else if app.mouse_down {
                     app.runtime.drag_to(c.x, c.y);
+                    render_frame(app);
                 }
-                render_frame(app);
+                // mail_down: only tracking `moved` so a drag cancels the click;
+                // the envelope doesn't move.
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             let app = &mut *app_ptr;
-            if app.bar_down {
+            if app.mail_down {
+                app.mail_down = false;
+                let _ = ReleaseCapture();
+                if !app.moved {
+                    // Defer: the letter window pumps its own modal loop, so we
+                    // must not still hold `&mut App` when it opens.
+                    let _ = PostMessageW(hwnd, WM_APP_READ_LETTER, WPARAM(0), LPARAM(0));
+                }
+            } else if app.bar_down {
                 app.bar_down = false;
                 let _ = ReleaseCapture();
                 app.runtime.end_bar_drag();
@@ -342,6 +376,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // we must not still be holding `&mut App` here.
                     let _ = PostMessageW(hwnd, WM_APP_COMPOSE, WPARAM(0), LPARAM(0));
                 }
+                tray::ID_READ_LETTER => {
+                    let _ = PostMessageW(hwnd, WM_APP_READ_LETTER, WPARAM(0), LPARAM(0));
+                }
                 tray::ID_AUTOSTART => autostart::set_enabled(!autostart::is_enabled()),
                 tray::ID_AUTOUPDATE => {
                     let on = !app.runtime.auto_update();
@@ -373,6 +410,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
 
+        WM_APP_READ_LETTER => {
+            // Peek the oldest unread letter, drop the borrow, run the modal
+            // reader, then re-borrow to retire it and maybe send the reply.
+            let msg = {
+                let app = &mut *app_ptr;
+                if app.modal_open {
+                    return LRESULT(0);
+                }
+                match app.runtime.peek_unread() {
+                    Some(m) => {
+                        app.modal_open = true;
+                        m
+                    }
+                    None => return LRESULT(0),
+                }
+            };
+            let reply = letter::present_read(hwnd, &msg);
+            let app = &mut *app_ptr;
+            app.modal_open = false;
+            app.runtime.pop_unread();
+            if let Some(text) = reply {
+                app.runtime.send_message(&text, &msg.sender_name, false);
+            }
+            LRESULT(0)
+        }
+
         WM_DISPLAYCHANGE => {
             let app = &mut *app_ptr;
             app.runtime.display_screen_changed();
@@ -397,6 +460,7 @@ unsafe fn show_menu(app_ptr: *mut App, hwnd: HWND) {
     let state = app.runtime.state.clone();
     let autostart_on = autostart::is_enabled();
     let auto_update_on = app.runtime.auto_update();
+    let has_unread = app.runtime.has_unread();
     let pending = app.pending_update.as_ref().map(|(_, v)| v.clone());
     tray::show_context_menu(
         hwnd,
@@ -404,6 +468,7 @@ unsafe fn show_menu(app_ptr: *mut App, hwnd: HWND) {
         &peers,
         autostart_on,
         auto_update_on,
+        has_unread,
         pending.as_deref(),
     );
 }
@@ -417,7 +482,7 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     let flip = !s.facing_right;
 
     // Riding lifts the pet so it sits astride the horse's back.
-    let pet_y = if s.on_horse { s.y - 16 } else { s.y };
+    let pet_y = if s.on_horse { s.y - runtime::HORSE_RIDER_LIFT } else { s.y };
 
     if s.on_horse {
         let frame = &sprites::HORSE_FRAMES[s.horse_frame % sprites::HORSE_FRAMES.len()];
@@ -435,18 +500,10 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     }
 
     if s.carry_mail {
-        // A smaller zoom than the pet/horse - at ZOOM (5) an 18x12 grid would
-        // render almost as big as the pet itself.
-        const MAIL_ZOOM: i32 = 2;
-        let mw = sprites::MAIL_GRID_COLS as i32 * MAIL_ZOOM;
-        let mh = sprites::MAIL_GRID_ROWS as i32 * MAIL_ZOOM;
-        let mx = if s.facing_right {
-            s.x + sprite_px - mw - 4
-        } else {
-            s.x + 4
-        };
-        let my = pet_y + sprite_px - mh - 22;
-        canvas.blit_grid(&sprites::MAIL_GRID, MAIL_ZOOM, mx, my, flip);
+        // Placement lives in `runtime::mail_rect` - single source of truth so the
+        // click hit test (`runtime::cursor_over_mail`) can't drift from the draw.
+        let (mx, my, _, _) = runtime::mail_rect(s);
+        canvas.blit_grid(&sprites::MAIL_GRID, runtime::MAIL_ZOOM, mx, my, flip);
     }
 }
 

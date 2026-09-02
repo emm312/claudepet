@@ -229,7 +229,7 @@ unsafe extern "system" fn compose_proc(
     }
 }
 
-unsafe fn get_edit_text(edit: HWND) -> String {
+pub(crate) unsafe fn get_edit_text(edit: HWND) -> String {
     let len = GetWindowTextLengthW(edit);
     if len <= 0 {
         return String::new();

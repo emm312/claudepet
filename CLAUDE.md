@@ -159,6 +159,25 @@ at `EXPRESS_SPEED_MULT` × courier speed. The receiving screen's visitor pet alw
 rides the horse when the delivery was express. `FrameSprite.carry_mail` / `.on_horse` /
 `.horse_frame` drive `main::draw_actor` (horse under → pet → mail over).
 
+**Receiving a letter (windows-branch UX, diverges from mac deliberately)**: the mac app auto-opens
+the letter window on receive (`dc69ae9`); the windows port does *not*. The inbound visitor does a
+short "touch and go" handoff (`courier::HANDOFF_DURATION` cut 2.2s → 0.5s here) and leaves straight
+away; the resident pet then **carries the envelope** (`Runtime::unread`, a `VecDeque<PetMessage>`;
+`FrameSprite.carry_mail` stays true while it's non-empty) and a content-free "a letter from X ✉"
+bubble shows for ~3s. Clicking the envelope — `runtime::cursor_over_mail`, a padded rect from the
+shared `runtime::mail_rect` (also the draw origin, so hit test and sprite can't drift), OR'd into the
+overlay hit test and the `WM_LBUTTON*` branches in `main.rs` via `App::mail_down` — posts
+`WM_APP_READ_LETTER`, which opens `letter.rs`'s themed reader (`App::modal_open` guards re-entrancy
+and forces the overlay click-through while it's up). "Read Letter…" in the tray/right-click menu
+(`tray::ID_READ_LETTER`, shown only when `has_unread`) is the same path, and the escape hatch for a
+docked pet. `letter.rs` mirrors the *read* mode of `UI/LetterWindow.swift` — paper fill, clay border
++ wax-seal dot, serif "A Letter Arrived" title, "From:" line, body, plain **OK** + clay-pill
+**Reply** (inline: toggles the body editable, retitles, sends on the same window) — but keeps a
+normal captioned Win32 frame rather than AppKit's borderless rounded panel. `Runtime::unread` is
+in-memory only: `update.rs`'s swap-and-relaunch (auto-update is on by default) silently drops an
+unread letter. Debug builds only: `CLAUDEPET_FAKE_LETTER=1` seeds one unread letter at startup so
+`letter.rs` can be eyeballed with `cargo run`.
+
 ## Build / run / test
 
 From `src-win/`:
@@ -228,7 +247,11 @@ that's what running clients compare against.
   ack-vs-timeout messaging interaction using an in-process fake transport and an injected clock
   (`tick_at`).
 - Constants come straight from the Swift source (gravity 1400, terminal 1600, courier speed 90,
-  handoff 2.2 s, away timeout 10 s, decay 3/2/1.5/1 per hour, 12 h catch-up cap, nap cap 5 min,
-  30 fps moving / 8 fps idle, sprite zoom 5).
+  away timeout 10 s, decay 3/2/1.5/1 per hour, 12 h catch-up cap, nap cap 5 min, 30 fps moving /
+  8 fps idle, sprite zoom 5). **Exception**: `courier::HANDOFF_DURATION` is 0.5 s here, not the
+  Swift 2.2 s — the inbound visitor no longer lingers to show the message (the resident pet keeps
+  the letter; see the Networking section). `CourierTests`' `inboundArrivesHandsOffThenLeaves` was
+  already a re-anchored exception and its Rust port tracks the shorter dwell.
 - If a macOS capability has no clean Windows equivalent, degrade explicitly and note it here rather
-  than faking it (currently: distraction detection is title/process based only).
+  than faking it (currently: distraction detection is title/process based only; receiving a letter
+  shows mail-in-hand + click-to-open instead of auto-opening the reader).

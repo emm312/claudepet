@@ -8,7 +8,7 @@ use crate::geometry;
 use crate::ledges::{self, Ledge};
 use crate::net::{Kind, PeerTransport, PetMessage};
 use crate::pet::brain::{AnimState, Brain};
-use crate::pet::courier::{Courier, Phase, HANDOFF_DURATION};
+use crate::pet::courier::{Courier, Phase};
 use crate::pet::dialogue::Dialogue;
 use crate::pet::pet_state::{now_secs, PetState, PetStateStore};
 use crate::pet::sprites::{CLIPS, GRID_SIZE};
@@ -32,6 +32,16 @@ const DOCK_IN_SECS: f64 = 0.30; // "jumps in" glide toward the bar
 const UNDOCK_KICK: f64 = 240.0; // px/s sideways shove on "tumbles out"
 const EXPRESS_SPEED_MULT: f64 = 3.0; // courier speed on the horse - matches Courier.expressSpeedMultiplier in Swift
 
+/// Nearest-neighbour zoom for the carried-mail sprite - a smaller factor than
+/// the pet/horse `ZOOM` (5) so an 18x12 envelope doesn't render pet-sized.
+pub const MAIL_ZOOM: i32 = 2;
+/// How far the rider is lifted so it sits astride the horse's back rather than
+/// overlapping it. Mirrors `HorseSprite.riderLift`.
+pub const HORSE_RIDER_LIFT: i32 = 16;
+/// Click padding around the little carried-mail rect - same idea as
+/// `BAR_HIT_PAD`, the envelope is a small target.
+const MAIL_HIT_PAD: i32 = 8;
+
 /// What `main` needs to blit a sprite this frame.
 pub struct FrameSprite {
     pub x: i32,
@@ -51,6 +61,23 @@ pub struct FrameSprite {
 /// doesn't need any dedicated animation state threaded through `Runtime`.
 fn current_horse_frame() -> usize {
     ((now_secs() / crate::pet::sprites::HORSE_FRAME_DURATION) as u64 % 2) as usize
+}
+
+/// Screen rect `(x, y, w, h)` of the carried-mail sprite for `s`, in the same
+/// place `main::draw_actor` blits it. Single source of truth so the click hit
+/// test can't drift from the drawing.
+pub fn mail_rect(s: &FrameSprite) -> (i32, i32, i32, i32) {
+    let sprite_px = SPRITE_PX;
+    let pet_y = if s.on_horse { s.y - HORSE_RIDER_LIFT } else { s.y };
+    let mw = crate::pet::sprites::MAIL_GRID_COLS as i32 * MAIL_ZOOM;
+    let mh = crate::pet::sprites::MAIL_GRID_ROWS as i32 * MAIL_ZOOM;
+    let mx = if s.facing_right {
+        s.x + sprite_px - mw - 4
+    } else {
+        s.x + 4
+    };
+    let my = pet_y + sprite_px - mh - 22;
+    (mx, my, mw, mh)
 }
 
 pub struct Runtime {
@@ -97,8 +124,12 @@ pub struct Runtime {
     outbound_express: bool,
     inbound: Option<Courier>,
     inbound_msg: Option<PetMessage>,
-    inbound_bubble_shown: bool,
+    inbound_handed_off: bool,
     inbound_express: bool,
+    /// Letters that have arrived but not been read yet. The resident pet keeps
+    /// holding the mail sprite while this is non-empty; clicking it opens the
+    /// front one in a letter window (see `letter.rs`). In-memory only.
+    unread: VecDeque<PetMessage>,
     visitor_x: f64,
     visitor_y: f64,
     visitor_frame_index: usize,
@@ -163,8 +194,9 @@ impl Runtime {
             outbound_express: false,
             inbound: None,
             inbound_msg: None,
-            inbound_bubble_shown: false,
+            inbound_handed_off: false,
             inbound_express: false,
+            unread: VecDeque::new(),
             visitor_x: 0.0,
             visitor_y: 0.0,
             visitor_frame_index: 0,
@@ -181,6 +213,23 @@ impl Runtime {
             search_report_at: None,
         };
         rt.refresh_ledges();
+
+        // Dev aid: seed a delivered-but-unread letter so the letter window
+        // (`letter.rs`) can be eyeballed with `cargo run` without a second box.
+        // Debug builds only; ignored in the shipped release. It goes straight
+        // into `unread` (not `inbound_msg`), so no ack is sent for it - expected.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("CLAUDEPET_FAKE_LETTER").is_some() {
+            rt.unread.push_back(PetMessage::deliver(
+                "Ran the numbers you asked about \u{2014} the Q3 pipeline is up 18% and the \
+                 board deck is ready for your review. Ping me when you want to walk through it."
+                    .to_string(),
+                "DeskMac".to_string(),
+                crate::net::Edge::Right,
+                false,
+            ));
+        }
+
         rt
     }
 
@@ -348,6 +397,40 @@ impl Runtime {
             .and_then(|r| r.get(col))
             .map(|&v| v != 0)
             .unwrap_or(false)
+    }
+
+    /// True when the cursor is over the carried-mail envelope of a pet that has
+    /// an unread letter waiting - the click target that opens the letter window.
+    /// Padded like the dock bar, and a plain rect (not per-pixel) since the
+    /// envelope is small.
+    pub fn cursor_over_mail(&self, cx: i32, cy: i32) -> bool {
+        if self.unread.is_empty() {
+            return false;
+        }
+        let Some(s) = self.pet_sprite() else { return false };
+        if !s.carry_mail {
+            return false;
+        }
+        let (mx, my, mw, mh) = mail_rect(&s);
+        cx >= mx - MAIL_HIT_PAD
+            && cx < mx + mw + MAIL_HIT_PAD
+            && cy >= my - MAIL_HIT_PAD
+            && cy < my + mh + MAIL_HIT_PAD
+    }
+
+    /// Is there a delivered letter waiting to be read?
+    pub fn has_unread(&self) -> bool {
+        !self.unread.is_empty()
+    }
+
+    /// A clone of the oldest unread letter, for the letter window to display.
+    pub fn peek_unread(&self) -> Option<PetMessage> {
+        self.unread.front().cloned()
+    }
+
+    /// Drop the oldest unread letter once it's been read.
+    pub fn pop_unread(&mut self) -> Option<PetMessage> {
+        self.unread.pop_front()
     }
 
     pub fn begin_drag(&mut self, cx: i32, cy: i32) {
@@ -604,7 +687,7 @@ impl Runtime {
         self.visitor_y = area.bottom - SPRITE_PX as f64;
         self.visitor_frame_index = 0;
         self.visitor_frame_elapsed = 0.0;
-        self.inbound_bubble_shown = false;
+        self.inbound_handed_off = false;
         self.inbound_express = message.express;
         let mult = if message.express { EXPRESS_SPEED_MULT } else { 1.0 };
         self.inbound = Some(Courier::inbound(off_screen_x, handoff_x, entry_edge, now, mult));
@@ -660,11 +743,16 @@ impl Runtime {
                     }
                     finished_inbound = true;
                 }
-                Phase::Handing if !self.inbound_bubble_shown => {
-                    self.inbound_bubble_shown = true;
+                Phase::Handing if !self.inbound_handed_off => {
+                    self.inbound_handed_off = true;
                     if let Some(m) = &self.inbound_msg {
-                        self.bubble_text = Some(m.text.clone());
-                        self.bubble_until = now + HANDOFF_DURATION;
+                        // Don't dump the message on screen - stash it as unread so
+                        // the pet carries the envelope until it's clicked open. The
+                        // bubble is just a content-free "you've got mail" beat, and
+                        // it outlasts the visitor's short handoff on purpose.
+                        self.unread.push_back(m.clone());
+                        self.bubble_text = Some(format!("a letter from {} \u{2709}", m.sender_name));
+                        self.bubble_until = now + 3.0;
                     }
                 }
                 _ => {}
@@ -756,7 +844,8 @@ impl Runtime {
         }
         let anim = self.resident_anim();
         let len = CLIPS.get(&anim).map(|c| c.frames.len()).unwrap_or(1);
-        // Carrying the letter on every courier leg it's actually walking.
+        // Carrying the letter on every courier leg it's actually walking, and
+        // also while any delivered-but-unread letter is waiting to be opened.
         let couriering = self
             .outbound
             .as_ref()
@@ -767,7 +856,7 @@ impl Runtime {
             anim,
             frame: self.frame_index.min(len.saturating_sub(1)),
             facing_right: self.resident_facing_right(),
-            carry_mail: couriering,
+            carry_mail: couriering || !self.unread.is_empty(),
             on_horse: couriering && self.outbound_express,
             horse_frame: current_horse_frame(),
         })
@@ -1020,5 +1109,42 @@ mod tests {
             .cloned()
             .expect("an ack should have been sent back");
         assert!(ack.0.express, "the ack preserves the express flag");
+    }
+
+    #[test]
+    fn inbound_delivery_is_held_as_unread_not_shown_on_screen() {
+        let fake = FakeTransport::with_peers(&["Sender"]);
+        let mut rt = new_rt(&fake);
+
+        let body = "the quarterly numbers are in, ping me";
+        let msg = PetMessage::deliver(body.into(), "Sender".into(), crate::net::Edge::Right, false);
+        fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
+
+        rt.tick_at(3000.0); // spawn the visitor
+        rt.tick_at(3000.0 + FAR); // walk it to the handoff -> Phase::Handing
+
+        // The handoff beat must not put the message body on screen.
+        if let Some((bubble, _, _)) = rt.bubble() {
+            assert!(
+                !bubble.contains(body),
+                "delivered body must not be shown automatically, got {bubble:?}"
+            );
+        }
+
+        // It's stashed as unread, and the resident pet now carries the envelope
+        // even though it isn't couriering (so `carry_mail` here is the new path).
+        assert!(rt.has_unread(), "the letter should be waiting as unread");
+        let held = rt.pet_sprite().expect("resident pet visible");
+        assert!(held.carry_mail, "pet holds the envelope while a letter is unread");
+        assert!(!held.on_horse);
+
+        // Reading it clears the indicator.
+        let read = rt.pop_unread().expect("a letter to read");
+        assert_eq!(read.text, body);
+        assert!(!rt.has_unread());
+        assert!(
+            !rt.pet_sprite().unwrap().carry_mail,
+            "envelope gone once the letter is read"
+        );
     }
 }

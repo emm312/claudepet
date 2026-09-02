@@ -30,7 +30,12 @@ pub enum Phase {
 }
 
 const SPEED: f64 = 90.0; // pt/s - brisker than the normal idle walk
-pub const HANDOFF_DURATION: f64 = 2.2;
+/// How long the inbound visitor pauses beside the resident pet to pass the
+/// letter. The Swift original holds 2.2s here so the message can be shown during
+/// the handoff; on the windows branch the resident pet keeps the letter and it's
+/// opened on demand (see `runtime.rs` / `letter.rs`), so the visitor just touches
+/// and goes rather than lingering.
+pub const HANDOFF_DURATION: f64 = 0.5;
 /// How long the outbound pet waits off-screen for an ack before circling back.
 /// 15s (not 10) so a slow discovery/address-fixup on the sender or a congested
 /// LAN doesn't fire the "message bounced" bubble for a message that actually
@@ -287,12 +292,12 @@ mod tests {
         assert_eq!(c.phase(), Phase::Handing);
         assert!((c.x() - 40.0).abs() < 0.01);
 
-        // Handoff duration is 2.2s - still handing 1s in.
-        c.tick(start + 4.0);
+        // Short "touch and go" handoff (0.5s) - the visitor doesn't linger.
+        c.tick(start + 3.2);
         assert_eq!(c.phase(), Phase::Handing);
 
-        // Past the 2.2s handoff (started at start+3).
-        c.tick(start + 6.0);
+        // Past the handoff (started at start+3).
+        c.tick(start + 4.0);
         assert_eq!(c.phase(), Phase::Leaving);
 
         c.tick(start + 10.0);

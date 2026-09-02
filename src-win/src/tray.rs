@@ -22,6 +22,7 @@ pub const ID_QUIT: u32 = 6;
 pub const ID_SEARCH: u32 = 7;
 pub const ID_AUTOUPDATE: u32 = 8;
 pub const ID_UPDATE_NOW: u32 = 9;
+pub const ID_READ_LETTER: u32 = 10;
 
 pub const TRAY_CALLBACK_MSG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 const TRAY_UID: u32 = 0x9A5;
@@ -62,6 +63,7 @@ pub fn show_context_menu(
     peers: &[String],
     autostart_on: bool,
     auto_update_on: bool,
+    has_unread: bool,
     pending_update: Option<&str>,
 ) {
     // Every menu-item string must stay alive until after TrackPopupMenu returns;
@@ -94,6 +96,10 @@ pub fn show_context_menu(
         let _ = AppendMenuW(menu, MF_STRING, ID_CLEAN as usize, p);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
 
+        if has_unread {
+            let p = push(&mut keep, "Read Letter\u{2026}".into());
+            let _ = AppendMenuW(menu, MF_STRING, ID_READ_LETTER as usize, p);
+        }
         let p = push(&mut keep, "Send Message\u{2026}".into());
         let _ = AppendMenuW(menu, MF_STRING, ID_SEND as usize, p);
         let p = push(&mut keep, "Search for pets".into());

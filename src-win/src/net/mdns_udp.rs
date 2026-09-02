@@ -10,8 +10,9 @@
 
 use super::{PeerTransport, PetMessage};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use socket2::{Domain, Socket, Type};
 use std::collections::{HashMap, VecDeque};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
 use std::sync::{Arc, Mutex};
 
 const SERVICE_TYPE: &str = "_claudepet._udp.local.";
@@ -44,7 +45,18 @@ pub fn local_display_name() -> String {
 
 impl MdnsUdpTransport {
     pub fn new() -> std::io::Result<Self> {
-        let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+        // A dual-stack IPv6 socket (IPV6_V6ONLY off) rather than a plain IPv4
+        // bind: mDNS resolution of a macOS peer can hand back an IPv6 address,
+        // and an IPv4-only socket silently never sees those datagrams even
+        // though discovery (which only exchanges names, not a live send)
+        // succeeds - Windows could see a Mac in "Search for pets" but never
+        // receive a message from it. `send()` below maps any IPv4 peer
+        // address to its IPv4-mapped IPv6 form so this one socket still
+        // reaches IPv4-only peers (e.g. other Windows instances) too.
+        let socket2 = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
+        socket2.set_only_v6(false)?;
+        socket2.bind(&SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0).into())?;
+        let socket: UdpSocket = socket2.into();
         let udp_port = socket.local_addr()?.port();
         Ok(MdnsUdpTransport {
             local_name: local_display_name(),
@@ -182,6 +194,19 @@ impl PeerTransport for MdnsUdpTransport {
     fn send(&self, message: &PetMessage, to_peer: &str) {
         let addr = self.peers.lock().unwrap().get(to_peer).copied();
         let Some(addr) = addr else { return };
+        // The socket is IPv6-only at the API level (dual-stack via
+        // IPV6_V6ONLY=false happens under the hood, but Rust's std still
+        // requires the SocketAddr passed in to be V6) - map a resolved IPv4
+        // peer address to its IPv4-mapped IPv6 form rather than dropping it.
+        let addr = match addr {
+            SocketAddr::V4(v4) => SocketAddr::V6(SocketAddrV6::new(
+                v4.ip().to_ipv6_mapped(),
+                v4.port(),
+                0,
+                0,
+            )),
+            v6 => v6,
+        };
         if let Ok(bytes) = serde_json::to_vec(message) {
             let _ = self.socket.send_to(&bytes, addr);
         }

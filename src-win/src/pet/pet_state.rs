@@ -49,6 +49,15 @@ pub struct PetState {
 
     pub birth_date: f64,
     pub last_tick: f64,
+
+    /// Install updates automatically in the background. Not pet state, but it
+    /// rides along in the same `state.json` rather than a second config file.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for PetState {
@@ -61,6 +70,7 @@ impl Default for PetState {
             cleanliness: 100.0,
             birth_date: now,
             last_tick: now,
+            auto_update: true,
         }
     }
 }
@@ -198,6 +208,7 @@ mod tests {
             cleanliness: 100.0,
             birth_date: 0.0,
             last_tick,
+            auto_update: true,
         }
     }
 

@@ -30,6 +30,7 @@ pub const BAR_H: i32 = 90;
 const BAR_HIT_PAD: i32 = 8; // the bar is tiny - give clicks a bigger target
 const DOCK_IN_SECS: f64 = 0.30; // "jumps in" glide toward the bar
 const UNDOCK_KICK: f64 = 240.0; // px/s sideways shove on "tumbles out"
+const EXPRESS_SPEED_MULT: f64 = 1.9; // courier speed on the horse
 
 /// What `main` needs to blit a sprite this frame.
 pub struct FrameSprite {
@@ -38,6 +39,10 @@ pub struct FrameSprite {
     pub anim: AnimState,
     pub frame: usize,
     pub facing_right: bool,
+    /// Carrying the mail (any courier leg).
+    pub carry_mail: bool,
+    /// Riding the horse (express delivery).
+    pub on_horse: bool,
 }
 
 pub struct Runtime {
@@ -81,10 +86,13 @@ pub struct Runtime {
     outbound: Option<Courier>,
     outbound_msg_id: Option<String>,
     outbound_ack: bool,
+    outbound_express: bool,
     inbound: Option<Courier>,
     inbound_msg: Option<PetMessage>,
     inbound_bubble_shown: bool,
+    inbound_express: bool,
     visitor_x: f64,
+    visitor_y: f64,
     visitor_frame_index: usize,
     visitor_frame_elapsed: f64,
     visitor_anim: AnimState,
@@ -99,6 +107,7 @@ pub struct Runtime {
     distraction_interval: f64,
 
     known_peers: Vec<String>,
+    search_report_at: Option<f64>,
 }
 
 impl Runtime {
@@ -143,10 +152,13 @@ impl Runtime {
             outbound: None,
             outbound_msg_id: None,
             outbound_ack: false,
+            outbound_express: false,
             inbound: None,
             inbound_msg: None,
             inbound_bubble_shown: false,
+            inbound_express: false,
             visitor_x: 0.0,
+            visitor_y: 0.0,
             visitor_frame_index: 0,
             visitor_frame_elapsed: 0.0,
             visitor_anim: AnimState::Walk,
@@ -158,6 +170,7 @@ impl Runtime {
             last_distraction_check: f64::NEG_INFINITY,
             distraction_interval: 2.5,
             known_peers: Vec::new(),
+            search_report_at: None,
         };
         rt.refresh_ledges();
         rt
@@ -245,6 +258,24 @@ impl Runtime {
         }
 
         self.known_peers = self.transport.peer_names();
+
+        // Report the result of a "Search for pets" once the scan window closes.
+        if let Some(t) = self.search_report_at {
+            if now >= t {
+                self.search_report_at = None;
+                let report = if self.known_peers.is_empty() {
+                    "no pets nearby - is another one running on the LAN?".to_string()
+                } else {
+                    format!(
+                        "found {} pet{}: {}",
+                        self.known_peers.len(),
+                        if self.known_peers.len() == 1 { "" } else { "s" },
+                        self.known_peers.join(", ")
+                    )
+                };
+                self.set_bubble(report, 4.5);
+            }
+        }
     }
 
     /// True while walking/angry/falling/dancing or a courier is active - drives
@@ -431,6 +462,32 @@ impl Runtime {
         self.persist_now();
     }
 
+    /// "Search for pets" - actively re-scan the LAN and report back in a bubble.
+    pub fn search_for_pets(&mut self) {
+        self.transport.rescan();
+        self.set_bubble("scanning the org for nearby pets\u{2026}".into(), 3.5);
+        self.search_report_at = Some(now_secs() + 3.0);
+    }
+
+    pub fn auto_update(&self) -> bool {
+        self.state.auto_update
+    }
+
+    pub fn set_auto_update(&mut self, on: bool) {
+        self.state.auto_update = on;
+        self.persist_now();
+    }
+
+    pub fn save_now(&mut self) {
+        self.persist_now();
+    }
+
+    /// Shown just before the app swaps itself for a downloaded update.
+    pub fn announce_update(&mut self, version: &str) {
+        let v = version.trim_start_matches('v');
+        self.set_bubble(format!("shipping v{v} - relaunching\u{2026}"), 12.0);
+    }
+
     pub fn display_screen_changed(&mut self) {
         let (x, y) = geometry::clamp_origin(self.pet_x, self.pet_y, SPRITE_PX as f64, SPRITE_PX as f64);
         self.pet_x = x;
@@ -446,11 +503,11 @@ impl Runtime {
 
     // ---- messaging ---------------------------------------------------
 
-    pub fn send_message(&mut self, text: &str, peer: &str) {
-        self.send_message_at(text, peer, now_secs());
+    pub fn send_message(&mut self, text: &str, peer: &str, express: bool) {
+        self.send_message_at(text, peer, express, now_secs());
     }
 
-    pub fn send_message_at(&mut self, text: &str, peer: &str, now: f64) {
+    pub fn send_message_at(&mut self, text: &str, peer: &str, express: bool, now: f64) {
         if self.outbound.is_some() {
             return;
         }
@@ -469,12 +526,18 @@ impl Runtime {
             crate::net::Edge::Left => area.left - SPRITE_PX as f64,
         };
 
-        let message = PetMessage::deliver(text.to_string(), self.local_name.clone(), edge);
+        let message = PetMessage::deliver(text.to_string(), self.local_name.clone(), edge, express);
         self.outbound_msg_id = Some(message.id.clone());
         self.outbound_ack = false;
-        self.outbound = Some(Courier::outbound(home_x, home_x, off_screen_x, edge, now));
+        self.outbound_express = express;
+        let mult = if express { EXPRESS_SPEED_MULT } else { 1.0 };
+        self.outbound = Some(Courier::outbound(home_x, home_x, off_screen_x, edge, now, mult));
         self.brain.set_falling(false);
-        let line = self.dialogue.depart_line().to_string();
+        let line = if express {
+            "saddling up - taking this one express".to_string()
+        } else {
+            self.dialogue.depart_line().to_string()
+        };
         self.set_bubble(line, 3.0);
         self.transport.send(&message, peer);
     }
@@ -522,10 +585,13 @@ impl Runtime {
         };
 
         self.visitor_x = off_screen_x;
+        self.visitor_y = area.bottom - SPRITE_PX as f64;
         self.visitor_frame_index = 0;
         self.visitor_frame_elapsed = 0.0;
         self.inbound_bubble_shown = false;
-        self.inbound = Some(Courier::inbound(off_screen_x, handoff_x, entry_edge, now));
+        self.inbound_express = message.express;
+        let mult = if message.express { EXPRESS_SPEED_MULT } else { 1.0 };
+        self.inbound = Some(Courier::inbound(off_screen_x, handoff_x, entry_edge, now, mult));
         self.inbound_msg = Some(message);
     }
 
@@ -674,12 +740,19 @@ impl Runtime {
         }
         let anim = self.resident_anim();
         let len = CLIPS.get(&anim).map(|c| c.frames.len()).unwrap_or(1);
+        // Carrying the letter on every courier leg it's actually walking.
+        let couriering = self
+            .outbound
+            .as_ref()
+            .map_or(false, |c| c.phase() != Phase::Away && c.phase() != Phase::Done);
         Some(FrameSprite {
             x: self.pet_x.round() as i32,
             y: self.pet_y.round() as i32,
             anim,
             frame: self.frame_index.min(len.saturating_sub(1)),
             facing_right: self.resident_facing_right(),
+            carry_mail: couriering,
+            on_horse: couriering && self.outbound_express,
         })
     }
 
@@ -688,10 +761,15 @@ impl Runtime {
         let len = CLIPS.get(&self.visitor_anim).map(|c| c.frames.len()).unwrap_or(1);
         Some(FrameSprite {
             x: self.visitor_x.round() as i32,
-            y: self.pet_y.round() as i32,
+            // Pinned to the work-area floor captured when the courier started, not
+            // to `pet_y` - the resident pet may be mid-fall (e.g. it just undocked
+            // to receive this letter) and shouldn't drag the visitor up with it.
+            y: self.visitor_y.round() as i32,
             anim: self.visitor_anim,
             frame: self.visitor_frame_index.min(len.saturating_sub(1)),
             facing_right: self.visitor_facing_right,
+            carry_mail: true, // a visitor always shows up holding the letter
+            on_horse: self.inbound_express,
         })
     }
 
@@ -813,7 +891,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["PeerX"]);
         let mut rt = new_rt(&fake);
 
-        rt.send_message_at("ship it", "PeerX", 1000.0);
+        rt.send_message_at("ship it", "PeerX", false, 1000.0);
         let sent = fake.sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0.kind, Kind::Deliver);
@@ -847,7 +925,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["PeerX"]);
         let mut rt = new_rt(&fake);
 
-        rt.send_message_at("hello?", "PeerX", 1000.0);
+        rt.send_message_at("hello?", "PeerX", false, 1000.0);
         rt.tick_at(1000.0 + FAR); // -> Away, deadline = (1000+FAR) + 10
         assert_eq!(rt.t_outbound_phase(), Some(Phase::Away));
 
@@ -868,7 +946,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["Sender"]);
         let mut rt = new_rt(&fake);
 
-        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right);
+        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right, false);
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
         rt.tick_at(2000.0); // spawns the inbound courier + visitor
@@ -890,5 +968,38 @@ mod tests {
         assert_eq!(acks.len(), 1, "exactly one ack should have been sent back");
         assert_eq!(acks[0].1, "Sender");
         assert!(rt.visitor_sprite().is_none(), "visitor should be gone once done");
+    }
+
+    #[test]
+    fn express_inbound_visitor_rides_the_horse_and_carries_mail() {
+        let fake = FakeTransport::with_peers(&["Sender"]);
+        let mut rt = new_rt(&fake);
+
+        let msg = PetMessage::deliver(
+            "urgent".into(),
+            "Sender".into(),
+            crate::net::Edge::Right,
+            true, // express
+        );
+        fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
+
+        rt.tick_at(2000.0);
+        let v = rt.visitor_sprite().expect("a visitor should be walking in");
+        assert!(v.on_horse, "an express delivery's visitor rides the horse");
+        assert!(v.carry_mail, "the visitor always holds the letter");
+
+        // The ack must round-trip the express flag too.
+        rt.tick_at(2000.0 + FAR);
+        rt.tick_at(2000.0 + FAR + 3.0);
+        rt.tick_at(2000.0 + 2.0 * FAR + 3.0);
+        let ack = fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(m, _)| m.kind == Kind::Ack)
+            .cloned()
+            .expect("an ack should have been sent back");
+        assert!(ack.0.express, "the ack preserves the express flag");
     }
 }

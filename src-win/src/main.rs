@@ -14,9 +14,11 @@ mod layered_window;
 mod ledges;
 mod net;
 mod pet;
+mod props;
 mod render;
 mod runtime;
 mod tray;
+mod update;
 
 use layered_window::LayeredWindow;
 use net::mdns_udp::MdnsUdpTransport;
@@ -32,7 +34,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const BAR_COLOR: [u8; 4] = [40, 138, 255, 255];
 
 const TICK_TIMER_ID: usize = 1;
+const UPDATE_APPLY_TIMER_ID: usize = 2;
 const WM_APP_COMPOSE: u32 = WM_APP + 2;
+const WM_APP_UPDATE_READY: u32 = WM_APP + 3;
 const FAST_INTERVAL_MS: u32 = 33; // ~30 fps
 const IDLE_INTERVAL_MS: u32 = 125; // 8 fps
 
@@ -45,6 +49,7 @@ struct App {
     bar_down: bool,
     moved: bool,
     down_pos: POINT,
+    pending_update: Option<(std::path::PathBuf, String)>,
 }
 
 fn main() {
@@ -100,12 +105,14 @@ fn main() {
             bar_down: false,
             moved: false,
             down_pos: POINT::default(),
+            pending_update: None,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut *app as *mut App as isize);
 
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         render_frame(&mut app);
         SetTimer(hwnd, TICK_TIMER_ID, IDLE_INTERVAL_MS, None);
+        spawn_update_checker(hwnd);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -116,6 +123,57 @@ fn main() {
         KillTimer(hwnd, TICK_TIMER_ID).ok();
         tray::remove_tray_icon(&app.tray);
     }
+}
+
+/// Background: check GitHub Releases ~15s after start, then every 6h. Whenever a
+/// newer release appears, download + verify it and hand the staged path to the
+/// UI thread via `WM_APP_UPDATE_READY`. Keeps checking even after staging one -
+/// with automatic updates *off* the staged build just waits in the menu, and a
+/// later release should still supersede it. Each distinct version is staged and
+/// posted at most once.
+fn spawn_update_checker(hwnd: HWND) {
+    let hwnd_bits = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        update::cleanup();
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        let mut staged_version: Option<String> = None;
+        loop {
+            if update::is_installed() {
+                if let Some(info) = update::check() {
+                    if staged_version.as_deref() != Some(info.version.as_str()) {
+                        if let Ok(staged) = update::download_and_stage(&info) {
+                            staged_version = Some(info.version.clone());
+                            let payload: *mut (std::path::PathBuf, String) =
+                                Box::into_raw(Box::new((staged, info.version)));
+                            unsafe {
+                                let _ = PostMessageW(
+                                    HWND(hwnd_bits as *mut _),
+                                    WM_APP_UPDATE_READY,
+                                    WPARAM(0),
+                                    LPARAM(payload as isize),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+        }
+    });
+}
+
+/// Save state, drop the tray icon, then swap in the staged exe and relaunch
+/// (this call exits the process).
+unsafe fn apply_update(app_ptr: *mut App, hwnd: HWND) {
+    let app = &mut *app_ptr;
+    let Some((staged, _)) = app.pending_update.take() else {
+        return;
+    };
+    app.runtime.save_now();
+    KillTimer(hwnd, TICK_TIMER_ID).ok();
+    KillTimer(hwnd, UPDATE_APPLY_TIMER_ID).ok();
+    tray::remove_tray_icon(&app.tray);
+    let _ = update::apply_and_relaunch(&staged);
 }
 
 unsafe fn app_from(hwnd: HWND) -> Option<*mut App> {
@@ -141,6 +199,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     };
 
     match msg {
+        WM_TIMER if wparam.0 == UPDATE_APPLY_TIMER_ID => {
+            KillTimer(hwnd, UPDATE_APPLY_TIMER_ID).ok();
+            apply_update(app_ptr, hwnd);
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_READY => {
+            let payload = lparam.0 as *mut (std::path::PathBuf, String);
+            if payload.is_null() {
+                return LRESULT(0);
+            }
+            let (staged, version) = *Box::from_raw(payload);
+            let app = &mut *app_ptr;
+            app.pending_update = Some((staged, version.clone()));
+            if app.runtime.auto_update() {
+                // Brief on-screen notice, then swap + relaunch.
+                app.runtime.announce_update(&version);
+                render_frame(app);
+                SetTimer(hwnd, UPDATE_APPLY_TIMER_ID, 8_000, None);
+            }
+            // Otherwise it just shows as "Install update vX now" in the menu.
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == TICK_TIMER_ID => {
             let app = &mut *app_ptr;
             app.runtime.tick();
@@ -252,12 +332,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 tray::ID_FEED => app.runtime.feed(),
                 tray::ID_PLAY => app.runtime.play(),
                 tray::ID_CLEAN => app.runtime.clean(),
+                tray::ID_SEARCH => app.runtime.search_for_pets(),
                 tray::ID_SEND => {
                     // Defer: opening the composer pumps its own message loop, so
                     // we must not still be holding `&mut App` here.
                     let _ = PostMessageW(hwnd, WM_APP_COMPOSE, WPARAM(0), LPARAM(0));
                 }
                 tray::ID_AUTOSTART => autostart::set_enabled(!autostart::is_enabled()),
+                tray::ID_AUTOUPDATE => {
+                    let on = !app.runtime.auto_update();
+                    app.runtime.set_auto_update(on);
+                }
+                tray::ID_UPDATE_NOW => apply_update(app_ptr, hwnd),
                 tray::ID_QUIT => {
                     KillTimer(hwnd, TICK_TIMER_ID).ok();
                     tray::remove_tray_icon(&app.tray);
@@ -275,9 +361,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let app = &mut *app_ptr;
                 app.runtime.peer_names_owned()
             };
-            if let Some((text, peer)) = compose::present(hwnd, &peers) {
+            if let Some((text, peer, express)) = compose::present(hwnd, &peers) {
                 let app = &mut *app_ptr;
-                app.runtime.send_message(&text, &peer);
+                app.runtime.send_message(&text, &peer, express);
             }
             LRESULT(0)
         }
@@ -302,8 +388,58 @@ unsafe fn show_menu(app_ptr: *mut App, hwnd: HWND) {
     let app = &mut *app_ptr;
     let peers = app.runtime.peer_names().to_vec();
     let state = app.runtime.state.clone();
-    let on = autostart::is_enabled();
-    tray::show_context_menu(hwnd, &state, &peers, on);
+    let autostart_on = autostart::is_enabled();
+    let auto_update_on = app.runtime.auto_update();
+    let pending = app.pending_update.as_ref().map(|(_, v)| v.clone());
+    tray::show_context_menu(
+        hwnd,
+        &state,
+        &peers,
+        autostart_on,
+        auto_update_on,
+        pending.as_deref(),
+    );
+}
+
+const HORSE_SCALE: i32 = 3;
+const MAIL_SCALE: i32 = 2;
+
+/// Draw one courier actor: horse (under, if express) → pet sprite → mail (over,
+/// if carrying). Mirrors for a left-facing actor.
+fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
+    let sprite_px = runtime::SPRITE_PX;
+    let flip = !s.facing_right;
+
+    // Riding lifts the pet so it sits astride the horse's back.
+    let pet_y = if s.on_horse { s.y - 16 } else { s.y };
+
+    if s.on_horse {
+        let h = &*props::HORSE;
+        let hw = h.w * HORSE_SCALE;
+        let hx = s.x + sprite_px / 2 - hw / 2;
+        let hy = pet_y + sprite_px / 2 - 4;
+        // No edge clamp here: `Canvas::put` clips every pixel, and clamping only
+        // the horse would let the rider slide off it near the screen bottom.
+        canvas.blit_rgba(&h.px, h.w, h.h, hx, hy, HORSE_SCALE, flip);
+    }
+
+    if let Some(clip) = CLIPS.get(&s.anim) {
+        let frame = &clip.frames[s.frame.min(clip.frames.len() - 1)];
+        canvas.blit_grid(frame, ZOOM, s.x, pet_y, flip);
+    }
+
+    if s.carry_mail {
+        let m = &*props::MAIL;
+        let mw = m.w * MAIL_SCALE;
+        let mh = m.h * MAIL_SCALE;
+        let mx = if s.facing_right {
+            s.x + sprite_px - mw - 4
+        } else {
+            s.x + 4
+        };
+        let my = pet_y + sprite_px - mh - 22;
+        canvas.blit_rgba(&m.px, m.w, m.h, mx, my, MAIL_SCALE, flip);
+    }
 }
 
 fn render_frame(app: &mut App) {
@@ -317,16 +453,10 @@ fn render_frame(app: &mut App) {
         canvas.fill_rect(bx, by, bw, bh, BAR_COLOR);
 
         if let Some(s) = app.runtime.pet_sprite() {
-            if let Some(clip) = CLIPS.get(&s.anim) {
-                let frame = &clip.frames[s.frame.min(clip.frames.len() - 1)];
-                canvas.blit_grid(frame, ZOOM, s.x, s.y, !s.facing_right);
-            }
+            draw_actor(&mut canvas, &s);
         }
         if let Some(s) = app.runtime.visitor_sprite() {
-            if let Some(clip) = CLIPS.get(&s.anim) {
-                let frame = &clip.frames[s.frame.min(clip.frames.len() - 1)];
-                canvas.blit_grid(frame, ZOOM, s.x, s.y, !s.facing_right);
-            }
+            draw_actor(&mut canvas, &s);
         }
     }
 

@@ -124,6 +124,7 @@ private struct LanWireMessage: Codable {
     let senderName: String
     let exitEdge: String
     let sentAt: Double
+    let express: Bool
 
     init(_ message: PetMessage) {
         id = message.id.uuidString.lowercased()
@@ -132,6 +133,7 @@ private struct LanWireMessage: Codable {
         senderName = message.senderName
         exitEdge = message.exitEdge.rawValue
         sentAt = message.sentAt.timeIntervalSince1970
+        express = message.express
     }
 
     func toPetMessage() -> PetMessage? {
@@ -145,7 +147,8 @@ private struct LanWireMessage: Codable {
             text: text,
             senderName: senderName,
             exitEdge: edge,
-            sentAt: Date(timeIntervalSince1970: sentAt)
+            sentAt: Date(timeIntervalSince1970: sentAt),
+            express: express
         )
     }
 }

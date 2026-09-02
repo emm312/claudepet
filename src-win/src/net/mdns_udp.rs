@@ -100,32 +100,47 @@ impl MdnsUdpTransport {
         .enable_addr_auto();
         let _ = mdns.register(service);
 
-        let receiver = mdns
-            .browse(SERVICE_TYPE)
+        // Prove the daemon is usable before returning; the worker below owns its
+        // own (re-)subscription.
+        mdns.browse(SERVICE_TYPE)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         let peers = Arc::clone(&self.peers);
         let own_name = self.local_name.clone();
+        let worker_mdns = mdns.clone();
         std::thread::spawn(move || {
-            while let Ok(event) = receiver.recv() {
-                match event {
-                    ServiceEvent::ServiceResolved(info) => {
-                        let name = instance_label(info.get_fullname());
-                        if name == own_name {
-                            continue;
+            // `mdns-sd` keys queriers by service type, so a one-shot `rescan()`
+            // browse transiently steals this subscription. Re-subscribe whenever
+            // the channel disconnects instead of letting discovery die on the
+            // first "Search for pets" click.
+            loop {
+                let Ok(receiver) = worker_mdns.browse(SERVICE_TYPE) else {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                };
+                while let Ok(event) = receiver.recv() {
+                    match event {
+                        ServiceEvent::ServiceResolved(info) => {
+                            let name = instance_label(info.get_fullname());
+                            if name == own_name {
+                                continue;
+                            }
+                            let port = info.get_port();
+                            if let Some(ip) = info.get_addresses().iter().next() {
+                                let addr = SocketAddr::new(*ip, port);
+                                peers.lock().unwrap().insert(name, addr);
+                            }
                         }
-                        let port = info.get_port();
-                        if let Some(ip) = info.get_addresses().iter().next() {
-                            let addr = SocketAddr::new(*ip, port);
-                            peers.lock().unwrap().insert(name, addr);
+                        ServiceEvent::ServiceRemoved(_ty, fullname) => {
+                            let name = instance_label(&fullname);
+                            peers.lock().unwrap().remove(&name);
                         }
+                        _ => {}
                     }
-                    ServiceEvent::ServiceRemoved(_ty, fullname) => {
-                        let name = instance_label(&fullname);
-                        peers.lock().unwrap().remove(&name);
-                    }
-                    _ => {}
                 }
+                // Disconnected: either a rescan stole the slot or the daemon is
+                // shutting down. Small backoff, then try to reclaim it.
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
 
@@ -175,6 +190,42 @@ impl PeerTransport for MdnsUdpTransport {
     fn try_recv(&self) -> Option<(PetMessage, String)> {
         self.inbox.lock().unwrap().pop_front()
     }
+
+    /// Fire a fresh browse and fold whatever resolves in the next ~3s into the
+    /// peer map, then `stop_browse` to collapse the retransmission chains this
+    /// and prior rescans piled up. The background worker re-subscribes as soon
+    /// as it sees the channel drop, so passive discovery survives.
+    fn rescan(&self) {
+        let Some(mdns) = self.mdns.clone() else { return };
+        let peers = Arc::clone(&self.peers);
+        let own = self.local_name.clone();
+        std::thread::spawn(move || {
+            let Ok(rx) = mdns.browse(SERVICE_TYPE) else { return };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                    Ok(ServiceEvent::ServiceResolved(info)) => {
+                        let name = instance_label(info.get_fullname());
+                        if name == own {
+                            continue;
+                        }
+                        if let Some(ip) = info.get_addresses().iter().next() {
+                            peers
+                                .lock()
+                                .unwrap()
+                                .insert(name, SocketAddr::new(*ip, info.get_port()));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            }
+            // Retire this one-shot browse so repeated "Search for pets" clicks
+            // don't stack registrations inside the daemon. The long-lived browse
+            // started in `start()` keeps its own handle and is unaffected.
+            let _ = mdns.stop_browse(SERVICE_TYPE);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -200,7 +251,7 @@ mod tests {
         let b_addr: SocketAddr = format!("127.0.0.1:{}", b.udp_port).parse().unwrap();
         a.peers.lock().unwrap().insert("B".into(), b_addr);
 
-        let msg = PetMessage::deliver("ping".into(), "A".into(), Edge::Right);
+        let msg = PetMessage::deliver("ping".into(), "A".into(), Edge::Right, false);
         a.send(&msg, "B");
 
         // Give the recv thread a moment.

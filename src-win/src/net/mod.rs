@@ -51,10 +51,14 @@ pub struct PetMessage {
     pub exit_edge: Edge,
     #[serde(rename = "sentAt")]
     pub sent_at: f64,
+    /// "express" delivery - the courier rides the horse. Optional on the wire so
+    /// older senders (and the macOS side before it adds a send toggle) decode.
+    #[serde(default)]
+    pub express: bool,
 }
 
 impl PetMessage {
-    pub fn deliver(text: String, sender_name: String, exit_edge: Edge) -> PetMessage {
+    pub fn deliver(text: String, sender_name: String, exit_edge: Edge, express: bool) -> PetMessage {
         PetMessage {
             id: random_id(),
             kind: Kind::Deliver,
@@ -62,6 +66,7 @@ impl PetMessage {
             sender_name,
             exit_edge,
             sent_at: crate::pet::pet_state::now_secs(),
+            express,
         }
     }
 
@@ -75,6 +80,7 @@ impl PetMessage {
             sender_name: self.sender_name.clone(),
             exit_edge: self.exit_edge,
             sent_at: crate::pet::pet_state::now_secs(),
+            express: self.express,
         }
     }
 }
@@ -111,6 +117,10 @@ pub trait PeerTransport: Send {
 
     /// Pop one received message (with the sending peer's display name), if any.
     fn try_recv(&self) -> Option<(PetMessage, String)>;
+
+    /// Kick off an active re-scan for nearby pets (the passive browse keeps
+    /// running regardless). Default: no-op.
+    fn rescan(&self) {}
 }
 
 #[cfg(test)]
@@ -136,7 +146,7 @@ mod tests {
 
     #[test]
     fn ack_preserves_id_and_clears_text() {
-        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right);
+        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false);
         let ack = m.make_ack();
         assert_eq!(ack.id, m.id);
         assert_eq!(ack.kind, Kind::Ack);
@@ -147,7 +157,7 @@ mod tests {
 
     #[test]
     fn json_round_trips_with_swift_field_names() {
-        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left);
+        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left, false);
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"senderName\":\"DeskB\""));
         assert!(json.contains("\"exitEdge\":\"left\""));
@@ -165,7 +175,7 @@ mod tests {
     /// breaks. This is the only Rust<->Swift guard available without a Mac build.
     #[test]
     fn wire_contract_matches_the_swift_lanwiremessage_shape() {
-        let json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"deliver","text":"ship it","senderName":"DeskMac","exitEdge":"left","sentAt":1700000000.5}"#;
+        let json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"deliver","text":"ship it","senderName":"DeskMac","exitEdge":"left","sentAt":1700000000.5,"express":true}"#;
 
         let m: PetMessage = serde_json::from_str(json).unwrap();
         assert_eq!(m.id, "7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d");
@@ -174,6 +184,7 @@ mod tests {
         assert_eq!(m.sender_name, "DeskMac");
         assert_eq!(m.exit_edge, Edge::Left);
         assert_eq!(m.sent_at, 1_700_000_000.5);
+        assert!(m.express);
 
         // Our encoder emits fields in struct order == the shape above, verbatim,
         // so the Mac's `JSONDecoder().decode(LanWireMessage.self, ...)` accepts it.
@@ -184,14 +195,16 @@ mod tests {
             sender_name: "DeskMac".into(),
             exit_edge: Edge::Left,
             sent_at: 1_700_000_000.5,
+            express: true,
         };
         assert_eq!(serde_json::to_string(&same).unwrap(), json);
 
-        // ack shape (empty text, kind "ack", same id preserved).
-        let ack_json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25}"#;
-        let ack: PetMessage = serde_json::from_str(ack_json).unwrap();
+        // `express` is optional on the wire - a sender that omits it still decodes.
+        let legacy = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25}"#;
+        let ack: PetMessage = serde_json::from_str(legacy).unwrap();
         assert_eq!(ack.kind, Kind::Ack);
         assert!(ack.text.is_empty());
+        assert!(!ack.express);
         assert_eq!(ack.id, m.id);
     }
 }

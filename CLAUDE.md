@@ -19,13 +19,15 @@ against `main`.
 
 The Swift sources are upstream and stay that way **with one exception**: the cross-platform
 messaging interop. On this branch the macOS app also carries
-`Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`, and one line of
-`Runtime.swift` is changed to use them, so a macOS pet and a Windows pet can exchange letters over a
-wire-compatible UDP+Bonjour link. Nothing else under `Sources/`, `Tests/`, `Package.swift`, or
-`Scripts/` is touched, and none of it is ever pushed to `main`. **These three Swift changes have not
+`Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift` changes
+one line to use them; and `Net/PetMessage.swift` gains an optional-decoded `express` field so the
+horse/express flag survives the round trip. Nothing else under `Sources/`, `Tests/`, `Package.swift`,
+or `Scripts/` is touched, and none of it is ever pushed to `main`. **These Swift changes have not
 been compiled** (no Swift toolchain on the Windows dev box) — run `swift build` / `swift test` on a
 Mac before relying on macOS↔Windows messaging, and note that Mac users must run the app built from
-*this* branch, not `main`, for interop.
+*this* branch, not `main`, for interop. The Mac side does **not** yet render the horse/mail on its
+visitor pet or expose an express toggle in its composer — that's follow-up work needing a Mac build;
+the Windows↔Windows experience is complete.
 
 ---
 
@@ -47,11 +49,17 @@ that touches the screen, the tray, autostart, or the network is native Windows c
 
 ```
 CLAUDE.md                     ← this file
-Package.swift, Sources/, Tests/, Scripts/, Resources/sprites/   ← upstream macOS app, DO NOT TOUCH
+.github/workflows/release.yml ← tag `v*` → build + upload release assets (auto-update source)
+Package.swift, Sources/       ← upstream macOS app (only the messaging-interop carve-out is touched)
+Tests/, Scripts/, Resources/sprites/   ← upstream macOS app, untouched
+horse.jpg, mail.jpg           ← pixel-art courier props (baked into the Windows binary at build time)
 src-win/                      ← the Windows port (Rust)
   Cargo.toml
+  publish.ps1                 build + `gh release` a new version for the in-app updater
+  build.rs                    decode/crop/downscale horse.jpg + mail.jpg → embedded RGBA sprites
   src/
     main.rs                   Win32 message loop, layered overlay window, tray, popup menu, wiring
+    update.rs                 GitHub-release auto-update: WinHTTP download, BCrypt sha256, self-swap
     runtime.rs                the tick loop + gravity — mirrors Sources/ClaudePet/Runtime.swift
     layered_window.rs         WS_EX_LAYERED overlay over the whole virtual screen; UpdateLayeredWindow
                               with a premultiplied-BGRA DIB; transparent pixels pass clicks through
@@ -104,10 +112,18 @@ datagrams to the peer's advertised address:port. Peer identity is the advertised
 **macOS ↔ Windows messaging** works via the same link: the macOS app on this branch runs
 `CompositeTransport([MultipeerLink(), LanUdpLink()])`, where `LanUdpLink` speaks the identical
 Bonjour type (`_claudepet._udp`) and JSON shape. Wire format (both sides): a flat object
-`{ id, kind, text, senderName, exitEdge, sentAt }` — `id` a lowercase dashed UUID, `kind`
-`"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds. Mac↔Mac still rides
-MultipeerConnectivity; `CompositeTransport` de-dups deliveries by `id` so a peer reachable on both
-links isn't served twice.
+`{ id, kind, text, senderName, exitEdge, sentAt, express }` — `id` a lowercase dashed UUID, `kind`
+`"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds, `express` a bool
+(optional — omitted reads as `false`). The Rust `net::tests::wire_contract_*` test pins the exact
+byte string. Mac↔Mac still rides MultipeerConnectivity; `CompositeTransport` de-dups deliveries by
+`id` so a peer reachable on both links isn't served twice.
+
+**Courier props** (`src-win/src/props.rs`, baked by `build.rs` from `horse.jpg` / `mail.jpg`): the
+resident pet holds the mail on every courier leg it walks; an **express** send (compose checkbox, or
+`express: true` on the wire) makes it ride the horse at `EXPRESS_SPEED_MULT` × courier speed. The
+receiving screen's visitor pet always holds the mail and rides the horse when the delivery was
+express. `FrameSprite.carry_mail` / `.on_horse` drive `main::draw_actor` (horse under → pet → mail
+over).
 
 ## Build / run / test
 
@@ -142,8 +158,30 @@ no Visual Studio *IDE* — but the MSVC target still needs a linker (`link.exe`)
 with the "Desktop development with C++" workload) or switch to the GNU toolchain
 (`rustup default stable-x86_64-pc-windows-gnu`), which links with bundled MinGW and needs no SDK.
 
-The shippable artifact is the bare `claudepet.exe` (~470 KB release, no runtime DLLs); wrap it in an
+The shippable artifact is the bare `claudepet.exe` (~560 KB release, no runtime DLLs); wrap it in an
 NSIS/`cargo-wix` installer only if you want Start-menu integration.
+
+### Auto-update (`src-win/src/update.rs`)
+
+A background thread checks `https://api.github.com/repos/emm312/claudepet/releases/latest` ~15 s
+after launch, then every 6 h. If `tag_name` is newer than `CARGO_PKG_VERSION` **and** the app is
+running from a real install (there's a sibling `uninstall.exe`), it downloads the release's
+`claudepet.exe` asset over WinHTTP, verifies it against the `claudepet.exe.sha256` asset (BCrypt
+SHA-256; refuses on mismatch, proceeds if the asset is absent), and stages it as `claudepet.new.exe`.
+The UI thread then either applies it right away (an 8 s "shipping vX…" bubble, then rename the live
+exe to `claudepet.old.exe`, move the new one in, relaunch, exit) when **Automatic updates** is on
+(tray toggle, default on, persisted in `state.json`), or just surfaces **Install update vX now** in
+the menu. On next launch `update::cleanup()` deletes the leftover `.old.exe`. No crates — WinHTTP +
+BCrypt only; TLS is the OS's.
+
+### Publishing a release
+
+`src-win/publish.ps1` (needs `gh auth login`): builds app + installer, writes `claudepet.exe.sha256`,
+and `gh release create`/`upload`s all three to `v<Cargo.toml version>` on the `windows` branch. The
+asset names `claudepet.exe` / `claudepet.exe.sha256` are load-bearing — `update::check()` finds them
+by name. Auto-upload alternative: push a `v*` tag and `.github/workflows/release.yml` builds on a
+Windows runner and attaches the same assets. Bump `version` in `src-win/Cargo.toml` before tagging;
+that's what running clients compare against.
 
 ## Porting rules
 

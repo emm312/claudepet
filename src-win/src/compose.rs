@@ -16,20 +16,22 @@ struct ComposeState {
     single_peer: Option<String>,
     edit: HWND,
     combo: HWND,
-    result: Option<(String, String)>,
+    express_cb: HWND,
+    result: Option<(String, String, bool)>,
     done: bool,
 }
 
 const ID_SEND: isize = 101;
 const ID_CANCEL: isize = 102;
+const ID_EXPRESS: isize = 103;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Show the compose window modally relative to `owner`. Returns `(text, peer)`
-/// or `None` if cancelled / no peers.
-pub fn present(owner: HWND, peers: &[String]) -> Option<(String, String)> {
+/// Show the compose window modally relative to `owner`. Returns
+/// `(text, peer, express)` or `None` if cancelled / no peers.
+pub fn present(owner: HWND, peers: &[String]) -> Option<(String, String, bool)> {
     if peers.is_empty() {
         unsafe {
             MessageBoxW(
@@ -61,11 +63,12 @@ pub fn present(owner: HWND, peers: &[String]) -> Option<(String, String)> {
             single_peer: if peers.len() == 1 { Some(peers[0].clone()) } else { None },
             edit: HWND::default(),
             combo: HWND::default(),
+            express_cb: HWND::default(),
             result: None,
             done: false,
         });
 
-        let (ww, wh) = (380i32, 230i32);
+        let (ww, wh) = (380i32, 264i32);
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
@@ -158,24 +161,34 @@ unsafe extern "system" fn compose_proc(
                 w!(""),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
                     | WINDOW_STYLE(ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32),
-                16, 44, 340, 110, hwnd, None, hinst, None,
+                16, 44, 340, 104, hwnd, None, hinst, None,
             )
             .unwrap_or_default();
             st.edit = edit;
+
+            let express_cb = CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                w!("Send by horse (express) \u{1F40E}"),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                16, 156, 260, 22, hwnd, HMENU(ID_EXPRESS as *mut _), hinst, None,
+            )
+            .unwrap_or_default();
+            st.express_cb = express_cb;
 
             let _ = CreateWindowExW(
                 Default::default(),
                 w!("BUTTON"),
                 w!("Send"),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
-                190, 162, 76, 28, hwnd, HMENU(ID_SEND as *mut _), hinst, None,
+                190, 190, 76, 28, hwnd, HMENU(ID_SEND as *mut _), hinst, None,
             );
             let _ = CreateWindowExW(
                 Default::default(),
                 w!("BUTTON"),
                 w!("Cancel"),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                278, 162, 76, 28, hwnd, HMENU(ID_CANCEL as *mut _), hinst, None,
+                278, 190, 76, 28, hwnd, HMENU(ID_CANCEL as *mut _), hinst, None,
             );
             LRESULT(0)
         }
@@ -190,8 +203,10 @@ unsafe extern "system" fn compose_proc(
                 ID_SEND => {
                     let text = get_edit_text(st.edit);
                     let peer = st.single_peer.clone().or_else(|| combo_selection(st.combo, &st.peers));
+                    let express = !st.express_cb.0.is_null()
+                        && SendMessageW(st.express_cb, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1;
                     if let (false, Some(peer)) = (text.trim().is_empty(), peer) {
-                        st.result = Some((text.trim().to_string(), peer));
+                        st.result = Some((text.trim().to_string(), peer, express));
                     }
                     st.done = true;
                     LRESULT(0)

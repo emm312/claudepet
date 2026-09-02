@@ -48,15 +48,30 @@ pub struct Courier {
     away_deadline: f64,
     handoff_end_time: f64,
     last_tick_date: f64,
+    speed: f64,
 }
 
 impl Courier {
-    pub fn outbound(start_x: f64, home_x: f64, off_screen_x: f64, edge: Edge, now: f64) -> Courier {
-        Courier::new(Role::Outbound, Phase::Departing, edge, start_x, off_screen_x, home_x, home_x, now)
+    /// `speed_mult` > 1.0 for an express (horse) delivery.
+    pub fn outbound(
+        start_x: f64,
+        home_x: f64,
+        off_screen_x: f64,
+        edge: Edge,
+        now: f64,
+        speed_mult: f64,
+    ) -> Courier {
+        Courier::new(Role::Outbound, Phase::Departing, edge, start_x, off_screen_x, home_x, home_x, now, speed_mult)
     }
 
-    pub fn inbound(off_screen_x: f64, handoff_x: f64, edge: Edge, now: f64) -> Courier {
-        Courier::new(Role::Inbound, Phase::Arriving, edge, off_screen_x, off_screen_x, handoff_x, handoff_x, now)
+    pub fn inbound(
+        off_screen_x: f64,
+        handoff_x: f64,
+        edge: Edge,
+        now: f64,
+        speed_mult: f64,
+    ) -> Courier {
+        Courier::new(Role::Inbound, Phase::Arriving, edge, off_screen_x, off_screen_x, handoff_x, handoff_x, now, speed_mult)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -69,6 +84,7 @@ impl Courier {
         home_x: f64,
         handoff_x: f64,
         now: f64,
+        speed_mult: f64,
     ) -> Courier {
         let away_deadline = if role == Role::Outbound {
             now + AWAY_TIMEOUT
@@ -87,6 +103,7 @@ impl Courier {
             away_deadline,
             handoff_end_time: f64::NEG_INFINITY,
             last_tick_date: now,
+            speed: SPEED * speed_mult.max(0.1),
         }
     }
 
@@ -176,7 +193,7 @@ impl Courier {
 
     fn move_toward(&mut self, target: f64, dt: f64) {
         self.facing_right = target > self.x;
-        let step = dt * SPEED;
+        let step = dt * self.speed;
         if (target - self.x).abs() <= step {
             self.x = target;
         } else if self.facing_right {
@@ -204,7 +221,7 @@ mod tests {
     #[test]
     fn outbound_departs_then_waits_at_the_edge() {
         let start = 0.0;
-        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start);
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         assert_eq!(c.phase(), Phase::Departing);
         assert!(c.facing_right());
 
@@ -216,7 +233,7 @@ mod tests {
     #[test]
     fn outbound_returns_home_on_ack() {
         let start = 0.0;
-        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start);
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         c.tick(start + 3.0);
         assert_eq!(c.phase(), Phase::Away);
 
@@ -231,7 +248,7 @@ mod tests {
     #[test]
     fn outbound_times_out_and_returns_without_ack() {
         let start = 0.0;
-        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start);
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         c.tick(start + 3.0); // reaches edge -> Away, deadline now (start+3)+10
         assert_eq!(c.phase(), Phase::Away);
 
@@ -245,7 +262,7 @@ mod tests {
     #[test]
     fn received_ack_is_ignored_outside_away_phase() {
         let start = 0.0;
-        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start);
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         assert_eq!(c.phase(), Phase::Departing);
         c.received_ack(); // no-op while still departing
         assert_eq!(c.phase(), Phase::Departing);
@@ -254,7 +271,7 @@ mod tests {
     #[test]
     fn inbound_arrives_hands_off_then_leaves() {
         let start = 0.0;
-        let mut c = Courier::inbound(-200.0, 40.0, Edge::Left, start);
+        let mut c = Courier::inbound(-200.0, 40.0, Edge::Left, start, 1.0);
         assert_eq!(c.phase(), Phase::Arriving);
         assert!(c.facing_right()); // walking rightward, toward the resident pet
 
@@ -278,7 +295,7 @@ mod tests {
     #[test]
     fn anim_reflects_movement_vs_pause() {
         let start = 0.0;
-        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start);
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         assert_eq!(c.anim(), AnimState::Walk);
         c.tick(start + 3.0);
         assert_eq!(c.phase(), Phase::Away);

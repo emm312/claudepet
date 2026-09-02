@@ -52,11 +52,32 @@ partial delivery failure was invisible.
 
 ## Fixes applied
 
-1. **One stable source port for every outbound datagram (macOS).**
-   `LanUdpLink` now pins every `NWConnection` it opens to originate from the
-   listener's own bound port (`NWParameters.requiredLocalEndpoint` +
-   `allowLocalEndpointReuse`), so a peer's learned address stays valid across
-   a deliver/ack round trip. This is the fix for finding A.
+1. **One stable source port for every outbound datagram (macOS) - rewritten
+   twice.** The first fix pinned every `NWConnection` LanUdpLink opened to
+   the listener's own bound port via `NWParameters.requiredLocalEndpoint` +
+   `allowLocalEndpointReuse`. That still shipped acks failing in practice:
+   Network.framework does not reliably support sharing a UDP port between an
+   active `NWListener` and new outbound connections, so those connections
+   could sit in `.preparing`/`.waiting` forever, silently swallowing the
+   send. `LanUdpLink` was rewritten again to use **one real BSD UDP socket**
+   (dual-stack IPv6, `IPV6_V6ONLY` off, `DispatchSourceRead` for receiving,
+   `sendto` for sending) - the same design already used successfully on the
+   Windows side - so sending and receiving share one socket with no
+   Network.framework connection lifecycle in between. Discovery moved from
+   `NWBrowser`/`NWListener.service` to `NetServiceBrowser`/`NetService`,
+   since the classic API hands back real `sockaddr` blobs (including the v6
+   scope id a link-local address needs) instead of an opaque unresolved
+   endpoint.
+   A second bug surfaced once real datagrams were flowing: a Bonjour-resolved
+   IPv4 peer address was handed to `sendto` as a raw `AF_INET` sockaddr on
+   the `AF_INET6` socket, which fails with `EINVAL` - every send to a
+   peer only known via Bonjour resolution (as opposed to one that had
+   already sent us a datagram) silently failed. Fixed by mapping a resolved
+   IPv4 address to its IPv4-mapped IPv6 form before sending, mirroring the
+   Rust side's `SocketAddr::V4 -> V6` conversion in `mdns_udp.rs::send`.
+   Both of these were caught by actually running two `LanUdpLink` instances
+   in-process end to end (see Verification below), not by inspection - the
+   first two attempts at this fix looked correct on paper and weren't.
 
 2. **Acks carry the acker's own name.** `PetMessage.make_ack(local_name)` /
    `makeAck(from: localName)` now take the local display name explicitly
@@ -101,21 +122,44 @@ partial delivery failure was invisible.
 
 ## Files touched
 
-- `Sources/ClaudePet/Net/LanUdpLink.swift`, `Net/PetMessage.swift`,
+- `Sources/ClaudePet/Net/LanUdpLink.swift` (rewritten to a raw BSD socket +
+  `NetService`/`NetServiceBrowser`), `Net/PetMessage.swift`,
   `Pet/Courier.swift`, `Runtime.swift`
+- `Tests/ClaudePetTests/LanUdpLinkTests.swift` (new) - a real two-instance
+  discovery/deliver/ack integration test
 - `src-win/src/net/mod.rs`, `net/mdns_udp.rs`, `pet/courier.rs`,
   `runtime.rs`, `compose.rs`, `main.rs`
 
 ## Verification
 
-- `swift build` and `swift test` both compile clean on macOS against every
-  change above (the `CourierTests` suite, `Runtime`, `LanUdpLink`, and
-  `PetMessage` all build and link with the new signatures).
-- The Windows/Rust side could not be compiled or tested in this pass - no
-  Windows target toolchain was available in the environment it was written
-  in. It was written by careful mirroring against the already-verified Swift
-  logic and needs `cargo test` / `cargo build --release` on a real Windows
-  box (or the `x86_64-pc-windows-gnu` cross target) before shipping.
+- `swift build` compiles clean on macOS against every change above.
+  `swift test`'s harness produces no test-run output in this sandbox (a
+  pre-existing environment issue - the linked `Testing.framework` was built
+  for macOS 14, this package targets 13 - unrelated to these changes), so it
+  isn't reliable evidence here.
+- Because of that, `LanUdpLink` was verified for real: `Tests/ClaudePetTests
+  /LanUdpLinkTests.swift` spins up two named `LanUdpLink` instances in one
+  process and drives them through Bonjour discovery, a `.deliver`, and an
+  `.ack`, asserting the ack is attributed to the acker (not the original
+  sender). The same scenario was also run live via a temporary CLI flag
+  against the real network stack (two in-process links, real sockets, real
+  Bonjour) and initially **failed twice** before passing:
+  - First pass (the `requiredLocalEndpoint` fix) never delivered anything -
+    exactly the Network.framework connection-lifecycle problem described
+    above.
+  - Second pass (the BSD-socket rewrite) delivered the message but the ack
+    send failed with `sendto: Invalid argument` - the missing IPv4-mapped-v6
+    conversion.
+  - Third pass passed end to end: discovery, delivery, and ack all round
+    tripped, with the ack correctly attributed to the acker's name.
+  `swift build`/the app bundle build (`Scripts/bundle.sh`) were rerun after
+  each fix to confirm they still compile clean.
+- The Windows/Rust side was cross-compiled clean from this Mac
+  (`cargo build --release --target x86_64-pc-windows-gnu`, both the app and
+  `claudepet-setup.exe`), which catches type/borrow-checker errors but not
+  runtime behavior - `cargo test` couldn't be run here (no working Wine
+  prefix), so the Rust-side logic (mirrored from the now-verified Swift
+  design) still needs `cargo test` on a real Windows box before shipping.
 
 ## Not yet done
 

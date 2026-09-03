@@ -8,6 +8,7 @@
 
 pub mod mdns_udp;
 
+use crate::pet::sprites::{AccessoryId, SkinId};
 use serde::{Deserialize, Serialize};
 
 /// Which edge of the sender's screen the pet exited through. The receiver spawns
@@ -78,10 +79,25 @@ pub struct PetMessage {
     /// to `pet::courier::DEFAULT_WAIT`).
     #[serde(rename = "timeToReturn", default, skip_serializing_if = "Option::is_none")]
     pub time_to_return: Option<f64>,
+    /// The sender's chosen skin/accessories at send time, so a peer's pet
+    /// renders with their own look while visiting rather than always showing
+    /// classic. Optional on the wire so a pre-skins sender on either platform
+    /// still decodes (the receiver then falls back to classic/no-accessories).
+    #[serde(rename = "senderSkin", default, skip_serializing_if = "Option::is_none")]
+    pub sender_skin: Option<SkinId>,
+    #[serde(rename = "senderAccessories", default, skip_serializing_if = "Option::is_none")]
+    pub sender_accessories: Option<Vec<AccessoryId>>,
 }
 
 impl PetMessage {
-    pub fn deliver(text: String, sender_name: String, exit_edge: Edge, express: bool) -> PetMessage {
+    pub fn deliver(
+        text: String,
+        sender_name: String,
+        exit_edge: Edge,
+        express: bool,
+        sender_skin: SkinId,
+        sender_accessories: Vec<AccessoryId>,
+    ) -> PetMessage {
         PetMessage {
             id: random_id(),
             kind: Kind::Deliver,
@@ -92,6 +108,8 @@ impl PetMessage {
             express,
             attachment: None,
             time_to_return: None,
+            sender_skin: Some(sender_skin),
+            sender_accessories: Some(sender_accessories),
         }
     }
 
@@ -113,6 +131,8 @@ impl PetMessage {
             express: self.express,
             attachment: None,
             time_to_return: Some(time_to_return),
+            sender_skin: self.sender_skin,
+            sender_accessories: self.sender_accessories.clone(),
         }
     }
 }
@@ -183,7 +203,7 @@ mod tests {
 
     #[test]
     fn ack_preserves_id_and_clears_text() {
-        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false);
+        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false, SkinId::default(), Vec::new());
         let ack = m.make_ack("DeskB", 1.5);
         assert_eq!(ack.id, m.id);
         assert_eq!(ack.kind, Kind::Ack);
@@ -194,8 +214,25 @@ mod tests {
     }
 
     #[test]
+    fn ack_carries_forward_the_original_senders_skin() {
+        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Clown, vec![AccessoryId::Glasses]);
+        let ack = m.make_ack("DeskB", 1.5);
+        assert_eq!(ack.sender_skin, Some(SkinId::Clown));
+        assert_eq!(ack.sender_accessories, Some(vec![AccessoryId::Glasses]));
+    }
+
+    #[test]
+    fn sender_skin_and_accessories_round_trip_through_json() {
+        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Plant, vec![AccessoryId::TopHat, AccessoryId::Glasses]);
+        let json = serde_json::to_string(&m).unwrap();
+        let back: PetMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sender_skin, Some(SkinId::Plant));
+        assert_eq!(back.sender_accessories, Some(vec![AccessoryId::TopHat, AccessoryId::Glasses]));
+    }
+
+    #[test]
     fn json_round_trips_with_swift_field_names() {
-        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left, false);
+        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left, false, SkinId::default(), Vec::new());
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"senderName\":\"DeskB\""));
         assert!(json.contains("\"exitEdge\":\"left\""));
@@ -236,11 +273,15 @@ mod tests {
             express: true,
             attachment: None,
             time_to_return: None,
+            sender_skin: None,
+            sender_accessories: None,
         };
         assert_eq!(serde_json::to_string(&same).unwrap(), json);
 
-        // `express` and `timeToReturn` are optional on the wire - a sender that
-        // omits both still decodes.
+        // `express`, `timeToReturn`, `senderSkin`, and `senderAccessories` are
+        // all optional on the wire - a sender that omits every one still
+        // decodes (falling back to classic/no-accessories - see
+        // `Runtime::visitor_sprite`).
         let legacy = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25}"#;
         let ack: PetMessage = serde_json::from_str(legacy).unwrap();
         assert_eq!(ack.kind, Kind::Ack);
@@ -248,10 +289,18 @@ mod tests {
         assert!(!ack.express);
         assert_eq!(ack.time_to_return, None);
         assert_eq!(ack.id, m.id);
+        assert_eq!(ack.sender_skin, None);
+        assert_eq!(ack.sender_accessories, None);
 
         // A modern ack carries `timeToReturn` too.
         let modern_ack = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25,"timeToReturn":2.75}"#;
         let ack: PetMessage = serde_json::from_str(modern_ack).unwrap();
         assert_eq!(ack.time_to_return, Some(2.75));
+
+        // A modern delivery can also carry `senderSkin`/`senderAccessories`.
+        let modern_deliver = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"deliver","text":"hi","senderName":"DeskMac","exitEdge":"left","sentAt":1700000000.5,"express":false,"senderSkin":"clown","senderAccessories":["topHat"]}"#;
+        let deliver: PetMessage = serde_json::from_str(modern_deliver).unwrap();
+        assert_eq!(deliver.sender_skin, Some(SkinId::Clown));
+        assert_eq!(deliver.sender_accessories, Some(vec![AccessoryId::TopHat]));
     }
 }

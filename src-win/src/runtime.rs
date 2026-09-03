@@ -11,7 +11,7 @@ use crate::pet::brain::{AnimState, Brain};
 use crate::pet::courier::{Courier, Phase};
 use crate::pet::dialogue::Dialogue;
 use crate::pet::pet_state::{now_secs, PetState, PetStateStore};
-use crate::pet::sprites::{CLIPS, GRID_SIZE};
+use crate::pet::sprites::{AccessoryId, SkinId, CLIPS, GRID_SIZE};
 use std::collections::{HashSet, VecDeque};
 
 pub const ZOOM: i32 = 5;
@@ -55,6 +55,10 @@ pub struct FrameSprite {
     pub on_horse: bool,
     /// Which of `HORSE_FRAMES` to draw - only meaningful when `on_horse`.
     pub horse_frame: usize,
+    /// The actor's own chosen skin - `PetState::skin` for the resident, or the
+    /// delivering `PetMessage`'s `sender_skin` for a visitor.
+    pub skin: SkinId,
+    pub accessories: Vec<AccessoryId>,
 }
 
 /// Picks a horse gallop frame from the wall clock, so `main::draw_actor`
@@ -247,6 +251,8 @@ impl Runtime {
                 "DeskMac".to_string(),
                 crate::net::Edge::Right,
                 false,
+                SkinId::default(),
+                Vec::new(),
             ));
         }
 
@@ -593,6 +599,32 @@ impl Runtime {
         self.persist_now();
     }
 
+    // ---- skins/accessories --------------------------------------------
+
+    pub fn skin(&self) -> SkinId {
+        self.state.skin
+    }
+
+    pub fn accessories(&self) -> &HashSet<AccessoryId> {
+        &self.state.accessories
+    }
+
+    /// Applies immediately (persists + the next frame renders it), mirroring
+    /// `set_auto_update` - no separate "apply" step needed.
+    pub fn set_skin(&mut self, id: SkinId) {
+        self.state.skin = id;
+        self.persist_now();
+    }
+
+    pub fn set_accessory(&mut self, id: AccessoryId, worn: bool) {
+        if worn {
+            self.state.accessories.insert(id);
+        } else {
+            self.state.accessories.remove(&id);
+        }
+        self.persist_now();
+    }
+
     /// Stop the transport so peers see this pet drop off the LAN promptly
     /// (mDNS GOODBYE). Call right before the process exits - including the
     /// update-relaunch path - so a quick quit-then-relaunch doesn't leave a
@@ -635,7 +667,14 @@ impl Runtime {
             return;
         }
         let edge = self.outbound_exit_edge();
-        let message = PetMessage::deliver(text.to_string(), self.local_name.clone(), edge, express);
+        let message = PetMessage::deliver(
+            text.to_string(),
+            self.local_name.clone(),
+            edge,
+            express,
+            self.state.skin,
+            self.state.accessories.iter().copied().collect(),
+        );
         self.outbound_queue.push_back(OutboundJob {
             message,
             recipients: peers.to_vec(),
@@ -951,6 +990,8 @@ impl Runtime {
             carry_mail: couriering || !self.unread.is_empty(),
             on_horse: couriering && self.outbound_express,
             horse_frame: current_horse_frame(),
+            skin: self.state.skin,
+            accessories: self.state.accessories.iter().copied().collect(),
         })
     }
 
@@ -969,6 +1010,11 @@ impl Runtime {
             carry_mail: true, // a visitor always shows up holding the letter
             on_horse: self.inbound_express,
             horse_frame: current_horse_frame(),
+            // The visiting peer's own chosen look, carried on the delivering
+            // `PetMessage` - falls back to classic/no-accessories for a peer on
+            // a build that predates skins.
+            skin: self.inbound_msg.as_ref().and_then(|m| m.sender_skin).unwrap_or_default(),
+            accessories: self.inbound_msg.as_ref().and_then(|m| m.sender_accessories.clone()).unwrap_or_default(),
         })
     }
 
@@ -1158,7 +1204,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["Sender"]);
         let mut rt = new_rt(&fake);
 
-        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right, false);
+        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new());
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
         rt.tick_at(2000.0); // spawns the inbound courier + visitor
@@ -1192,6 +1238,8 @@ mod tests {
             "Sender".into(),
             crate::net::Edge::Right,
             true, // express
+            SkinId::default(),
+            Vec::new(),
         );
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
@@ -1221,7 +1269,7 @@ mod tests {
         let mut rt = new_rt(&fake);
 
         let body = "the quarterly numbers are in, ping me";
-        let msg = PetMessage::deliver(body.into(), "Sender".into(), crate::net::Edge::Right, false);
+        let msg = PetMessage::deliver(body.into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new());
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
         rt.tick_at(3000.0); // spawn the visitor

@@ -31,4 +31,47 @@ struct SpritesTests {
             #expect(!clip.frames.isEmpty, "\(state) has no frames")
         }
     }
+
+    @Test func everySkinCoversEveryAnimStateWithFullSizeFrames() {
+        let states = Set(PetSprites.clips.keys)
+        for id in SkinId.allCases {
+            guard let skin = Skins.all[id] else {
+                Issue.record("no SkinDef registered for \(id)")
+                continue
+            }
+            #expect(Set(skin.clips.keys) == states, "\(id) doesn't cover every anim state")
+            for (state, clip) in skin.clips {
+                for (fi, frame) in clip.frames.enumerated() {
+                    #expect(frame.count == Int(PetSprites.gridSize.height), "\(id) \(state) frame \(fi) wrong row count")
+                    for row in frame {
+                        #expect(row.count == Int(PetSprites.gridSize.width), "\(id) \(state) frame \(fi) wrong row width")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func everyAccessoryGridIsFullSize() {
+        for id in AccessoryId.allCases {
+            guard let accessory = Accessories.all[id] else {
+                Issue.record("no AccessoryDef registered for \(id)")
+                continue
+            }
+            #expect(accessory.grid.count == Int(PetSprites.gridSize.height))
+            for row in accessory.grid {
+                #expect(row.count == Int(PetSprites.gridSize.width))
+            }
+        }
+    }
+
+    @Test func renderCompositeLayersAccessoriesOverTheSkin() {
+        guard let skin = Skins.all[.classic], let clip = skin.clips[.idle], let hat = Accessories.all[.topHat] else {
+            Issue.record("missing classic idle clip or top hat accessory")
+            return
+        }
+        let plain = PixelArtRenderer.render(grid: clip.frames[0], palette: skin.palette, zoom: 2)
+        let withHat = PixelArtRenderer.renderComposite(grid: clip.frames[0], palette: skin.palette, accessories: [hat], zoom: 2)
+        #expect(plain.width == withHat.width)
+        #expect(plain.height == withHat.height)
+    }
 }

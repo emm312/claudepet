@@ -26,7 +26,7 @@ enum Palette {
 /// neighbour ready. `zoom` repeats each source pixel into a `zoom x zoom` block
 /// so we get crisp square pixels at any window scale.
 enum PixelArtRenderer {
-    static func render(grid: [[UInt8]], zoom: Int) -> CGImage {
+    static func render(grid: [[UInt8]], palette: [UInt8: NSColor] = Palette.colors, zoom: Int) -> CGImage {
         let rows = grid.count
         let cols = grid.first?.count ?? 0
         let width = cols * zoom
@@ -36,7 +36,7 @@ enum PixelArtRenderer {
 
         for (r, row) in grid.enumerated() {
             for (c, index) in row.enumerated() {
-                let color = Palette.colors[index]?.usingColorSpace(.deviceRGB)
+                let color = palette[index]?.usingColorSpace(.deviceRGB)
                 let (red, green, blue, alpha): (UInt8, UInt8, UInt8, UInt8)
                 if let color {
                     red = UInt8(color.redComponent * 255)
@@ -73,6 +73,32 @@ enum PixelArtRenderer {
             bitmapInfo: bitmapInfo.rawValue
         )!
         return context.makeImage()!
+    }
+
+    /// Renders `grid` under `palette`, then draws each `accessory` grid/palette
+    /// pair on top in order - used to layer worn accessories (their own small,
+    /// mostly-transparent grid with their own tiny palette) over a skin's
+    /// frame without merging unrelated palette-index spaces.
+    static func renderComposite(grid: [[UInt8]], palette: [UInt8: NSColor], accessories: [AccessoryDef], zoom: Int) -> CGImage {
+        var image = render(grid: grid, palette: palette, zoom: zoom)
+        guard !accessories.isEmpty else { return image }
+
+        let width = image.width
+        let height = image.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace, bitmapInfo: bitmapInfo.rawValue
+        ) else { return image }
+
+        for accessory in accessories {
+            let overlay = render(grid: accessory.grid, palette: accessory.palette, zoom: zoom)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            context.draw(overlay, in: CGRect(x: 0, y: 0, width: width, height: height))
+            image = context.makeImage() ?? image
+        }
+        return image
     }
 }
 

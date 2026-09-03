@@ -23,6 +23,7 @@ pub const ID_SEARCH: u32 = 7;
 pub const ID_AUTOUPDATE: u32 = 8;
 pub const ID_UPDATE_NOW: u32 = 9;
 pub const ID_READ_LETTER: u32 = 10;
+pub const ID_CUSTOMIZE: u32 = 11;
 
 pub const TRAY_CALLBACK_MSG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 const TRAY_UID: u32 = 0x9A5;
@@ -100,6 +101,8 @@ pub fn show_context_menu(
             let p = push(&mut keep, "Read Letter\u{2026}".into());
             let _ = AppendMenuW(menu, MF_STRING, ID_READ_LETTER as usize, p);
         }
+        let p = push(&mut keep, "Customize Pet\u{2026}".into());
+        let _ = AppendMenuW(menu, MF_STRING, ID_CUSTOMIZE as usize, p);
         let p = push(&mut keep, "Send Message\u{2026}".into());
         let _ = AppendMenuW(menu, MF_STRING, ID_SEND as usize, p);
         let p = push(&mut keep, "Search for pets".into());

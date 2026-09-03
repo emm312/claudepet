@@ -23,8 +23,15 @@ struct PetState: Codable {
     /// existed) still decode instead of resetting every stat to default.
     var autoUpdatesEnabled: Bool = true
 
+    /// The pet's chosen look and worn accessories. Rides along in the same
+    /// state.json (see `autoUpdatesEnabled` above for the precedent), decoded
+    /// with a fallback below so state.json files saved before skins existed
+    /// still decode as `.classic` / no accessories rather than failing.
+    var skinId: SkinId = .classic
+    var accessoryIds: Set<AccessoryId> = []
+
     private enum CodingKeys: String, CodingKey {
-        case hunger, energy, happiness, cleanliness, birthDate, lastTick, autoUpdatesEnabled
+        case hunger, energy, happiness, cleanliness, birthDate, lastTick, autoUpdatesEnabled, skinId, accessoryIds
     }
 
     init() {}
@@ -38,6 +45,8 @@ struct PetState: Codable {
         birthDate = try container.decode(Date.self, forKey: .birthDate)
         lastTick = try container.decode(Date.self, forKey: .lastTick)
         autoUpdatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdatesEnabled) ?? true
+        skinId = try container.decodeIfPresent(SkinId.self, forKey: .skinId) ?? .classic
+        accessoryIds = try container.decodeIfPresent(Set<AccessoryId>.self, forKey: .accessoryIds) ?? []
     }
 
     /// Per-hour decay rates. Tuned so the pet needs light daily attention but

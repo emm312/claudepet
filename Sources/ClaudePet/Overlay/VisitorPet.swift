@@ -12,9 +12,16 @@ final class VisitorPet {
     private let zoom: Int
     private var frameIndex = 0
     private var frameElapsed: TimeInterval = 0
+    /// The visiting peer's own chosen look, carried on the delivering
+    /// `PetMessage` (`senderSkin`/`senderAccessories`) - falls back to
+    /// classic/no-accessories for a peer on a build that predates skins.
+    private let skin: SkinDef
+    private let accessories: [AccessoryDef]
 
-    init(zoom: Int, y: CGFloat) {
+    init(zoom: Int, y: CGFloat, skinId: SkinId = .classic, accessoryIds: [AccessoryId] = []) {
         self.zoom = zoom
+        self.skin = Skins.all[skinId] ?? Skins.all[.classic]!
+        self.accessories = accessoryIds.compactMap { Accessories.all[$0] }
         let size = CGSize(
             width: PetSprites.gridSize.width * CGFloat(zoom),
             height: PetSprites.gridSize.height * CGFloat(zoom)
@@ -34,14 +41,14 @@ final class VisitorPet {
     }
 
     func render(anim: PetMood.AnimState, facingRight: Bool, dt: TimeInterval) {
-        guard let clip = PetSprites.clips[anim] else { return }
+        guard let clip = skin.clips[anim] else { return }
         frameElapsed += dt
         if frameElapsed >= clip.frameDuration {
             frameElapsed = 0
             frameIndex = (frameIndex + 1) % clip.frames.count
         }
         let idx = min(frameIndex, clip.frames.count - 1)
-        let image = PixelArtRenderer.render(grid: clip.frames[idx], zoom: zoom)
+        let image = PixelArtRenderer.renderComposite(grid: clip.frames[idx], palette: skin.palette, accessories: accessories, zoom: zoom)
         view.setImage(image, flippedHorizontally: !facingRight)
     }
 

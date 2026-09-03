@@ -3,8 +3,6 @@
 //! window's DIB section. Mirrors `PixelArtRenderer` in
 //! `Sources/ClaudePet/Pet/Sprites.swift` (nearest-neighbour integer zoom).
 
-use crate::pet::sprites::PALETTE;
-
 /// A borrowed view of the overlay's 32-bit top-down BGRA framebuffer.
 pub struct Canvas<'a> {
     pub px: &'a mut [u8],
@@ -40,10 +38,16 @@ impl Canvas<'_> {
     }
 
     /// Blit a 16x16-ish palette-index grid at `dest`, each source pixel expanded
-    /// to a `zoom` x `zoom` block. `flip_h` mirrors horizontally.
+    /// to a `zoom` x `zoom` block. `flip_h` mirrors horizontally. `palette`
+    /// resolves indices to RGBA - callers pass the horse/mail's shared
+    /// `sprites::PALETTE`, or a skin/accessory's own palette
+    /// (`sprites::SkinDef`/`AccessoryDef`), so multiple independent
+    /// palette-index spaces can coexist in one frame (e.g. a skin frame then
+    /// each worn accessory, blitted in successive calls).
     pub fn blit_grid(
         &mut self,
         grid: &[Vec<u8>],
+        palette: &[[u8; 4]],
         zoom: i32,
         dest_x: i32,
         dest_y: i32,
@@ -58,7 +62,7 @@ impl Canvas<'_> {
                 if idx == 0 {
                     continue;
                 }
-                let rgba = PALETTE[idx as usize % PALETTE.len()];
+                let rgba = palette[idx as usize % palette.len()];
                 let bgra = [rgba[2], rgba[1], rgba[0], rgba[3]];
                 for zy in 0..zoom {
                     for zx in 0..zoom {

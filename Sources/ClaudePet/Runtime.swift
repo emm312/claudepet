@@ -303,7 +303,7 @@ final class Runtime {
     /// is empty.
     func sendMessage(_ text: String, to peers: [String], express: Bool = false) {
         guard !peers.isEmpty else { return }
-        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: outboundExitEdge(), express: express)
+        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: outboundExitEdge(), express: express, senderSkin: state.skinId, senderAccessories: Array(state.accessoryIds))
         outboundQueue.append((message, peers))
         startNextOutboundIfIdle()
     }
@@ -393,7 +393,7 @@ final class Runtime {
 
         visitorGroundY = window.frame.origin.y
         visitorBaseY = visitorGroundY + (message.express ? HorseSprite.riderLift : 0)
-        let visitor = VisitorPet(zoom: zoom, y: visitorBaseY)
+        let visitor = VisitorPet(zoom: zoom, y: visitorBaseY, skinId: message.senderSkin ?? .classic, accessoryIds: message.senderAccessories ?? [])
         visitor.setX(offScreenX)
         self.visitor = visitor
         inboundHandedOff = false
@@ -827,6 +827,38 @@ final class Runtime {
         persistSoon()
     }
 
+    // MARK: - Skins/accessories
+
+    var skinId: SkinId { state.skinId }
+    var accessoryIds: Set<AccessoryId> { state.accessoryIds }
+
+    /// Applies immediately (persists + re-renders the current frame), mirroring
+    /// `setAutoUpdatesEnabled` - no separate "apply" step needed.
+    func setSkin(_ id: SkinId) {
+        state.skinId = id
+        persistSoon()
+        renderCurrentFrame()
+    }
+
+    func setAccessory(_ id: AccessoryId, worn: Bool) {
+        if worn {
+            state.accessoryIds.insert(id)
+        } else {
+            state.accessoryIds.remove(id)
+        }
+        persistSoon()
+        renderCurrentFrame()
+    }
+
+    private var customizeWindow: CustomizeWindow?
+
+    func presentCustomizeWindow() {
+        if customizeWindow == nil {
+            customizeWindow = CustomizeWindow(runtime: self)
+        }
+        customizeWindow?.present()
+    }
+
     // MARK: - Rendering
 
     /// The courier's own anim/facing take over while it's actively moving the
@@ -842,8 +874,19 @@ final class Runtime {
         return outboundCourier.facingRight
     }
 
+    /// The resident's currently-selected skin, falling back to classic if
+    /// `state.skinId` ever names one that isn't registered (should not happen,
+    /// but keeps rendering total).
+    private var currentSkin: SkinDef {
+        Skins.all[state.skinId] ?? Skins.all[.classic]!
+    }
+
+    private var currentAccessories: [AccessoryDef] {
+        state.accessoryIds.compactMap { Accessories.all[$0] }
+    }
+
     private func advanceFrame(dt: TimeInterval) {
-        guard let clip = PetSprites.clips[currentAnim] else { return }
+        guard let clip = currentSkin.clips[currentAnim] else { return }
         frameElapsed += dt
         if frameElapsed >= clip.frameDuration {
             frameElapsed = 0
@@ -853,9 +896,9 @@ final class Runtime {
     }
 
     private func renderCurrentFrame() {
-        guard let clip = PetSprites.clips[currentAnim] else { return }
+        guard let clip = currentSkin.clips[currentAnim] else { return }
         let idx = min(frameIndex, clip.frames.count - 1)
-        let image = PixelArtRenderer.render(grid: clip.frames[idx], zoom: zoom)
+        let image = PixelArtRenderer.renderComposite(grid: clip.frames[idx], palette: currentSkin.palette, accessories: currentAccessories, zoom: zoom)
         view.setImage(image, flippedHorizontally: !currentFacingRight)
     }
 

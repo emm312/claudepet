@@ -8,6 +8,7 @@
 
 mod autostart;
 mod compose;
+mod customize;
 mod distraction;
 mod geometry;
 mod layered_window;
@@ -23,7 +24,7 @@ mod update;
 use layered_window::LayeredWindow;
 use net::mdns_udp::MdnsUdpTransport;
 use pet::sprites;
-use pet::sprites::CLIPS;
+use pet::sprites::{ACCESSORIES, SKINS};
 use runtime::{Runtime, ZOOM};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -39,6 +40,7 @@ const UPDATE_APPLY_TIMER_ID: usize = 2;
 const WM_APP_COMPOSE: u32 = WM_APP + 2;
 const WM_APP_UPDATE_READY: u32 = WM_APP + 3;
 const WM_APP_READ_LETTER: u32 = WM_APP + 4;
+const WM_APP_CUSTOMIZE: u32 = WM_APP + 5;
 const FAST_INTERVAL_MS: u32 = 33; // ~30 fps
 const IDLE_INTERVAL_MS: u32 = 125; // 8 fps
 
@@ -379,6 +381,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 tray::ID_READ_LETTER => {
                     let _ = PostMessageW(hwnd, WM_APP_READ_LETTER, WPARAM(0), LPARAM(0));
                 }
+                tray::ID_CUSTOMIZE => {
+                    let _ = PostMessageW(hwnd, WM_APP_CUSTOMIZE, WPARAM(0), LPARAM(0));
+                }
                 tray::ID_AUTOSTART => autostart::set_enabled(!autostart::is_enabled()),
                 tray::ID_AUTOUPDATE => {
                     let on = !app.runtime.auto_update();
@@ -406,6 +411,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if let Some((text, recipients, express)) = compose::present(hwnd, &peers) {
                 let app = &mut *app_ptr;
                 app.runtime.send_message(&text, &recipients, express);
+            }
+            LRESULT(0)
+        }
+
+        WM_APP_CUSTOMIZE => {
+            // Same defer-then-reborrow shape as WM_APP_COMPOSE: don't hold
+            // `&mut App` across customize::present's own nested message pump.
+            let (skin, accessories) = {
+                let app = &mut *app_ptr;
+                (app.runtime.skin(), app.runtime.accessories().clone())
+            };
+            if let Some((new_skin, new_accessories)) = customize::present(hwnd, skin, &accessories) {
+                let app = &mut *app_ptr;
+                app.runtime.set_skin(new_skin);
+                for id in crate::pet::sprites::AccessoryId::ALL {
+                    app.runtime.set_accessory(id, new_accessories.contains(&id));
+                }
             }
             LRESULT(0)
         }
@@ -491,19 +513,30 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
         let hy = pet_y + sprite_px / 2 - 4;
         // No edge clamp here: `Canvas::put` clips every pixel, and clamping only
         // the horse would let the rider slide off it near the screen bottom.
-        canvas.blit_grid(frame, ZOOM, hx, hy, flip);
+        canvas.blit_grid(frame, &sprites::PALETTE, ZOOM, hx, hy, flip);
     }
 
-    if let Some(clip) = CLIPS.get(&s.anim) {
-        let frame = &clip.frames[s.frame.min(clip.frames.len() - 1)];
-        canvas.blit_grid(frame, ZOOM, s.x, pet_y, flip);
+    // The actor's own chosen skin (`s.skin`, resolved from `PetState::skin` for
+    // the resident, or the delivering `PetMessage`'s `sender_skin` for a
+    // visitor - see `Runtime::pet_sprite`/`visitor_sprite`), then each worn
+    // accessory blitted on top in its own palette-index space.
+    if let Some(skin) = SKINS.get(&s.skin) {
+        if let Some(clip) = skin.clips.get(&s.anim) {
+            let frame = &clip.frames[s.frame.min(clip.frames.len() - 1)];
+            canvas.blit_grid(frame, &skin.palette, ZOOM, s.x, pet_y, flip);
+        }
+        for accessory_id in &s.accessories {
+            if let Some(accessory) = ACCESSORIES.get(accessory_id) {
+                canvas.blit_grid(&accessory.grid, &accessory.palette, ZOOM, s.x, pet_y, flip);
+            }
+        }
     }
 
     if s.carry_mail {
         // Placement lives in `runtime::mail_rect` - single source of truth so the
         // click hit test (`runtime::cursor_over_mail`) can't drift from the draw.
         let (mx, my, _, _) = runtime::mail_rect(s);
-        canvas.blit_grid(&sprites::MAIL_GRID, runtime::MAIL_ZOOM, mx, my, flip);
+        canvas.blit_grid(&sprites::MAIL_GRID, &sprites::PALETTE, runtime::MAIL_ZOOM, mx, my, flip);
     }
 }
 

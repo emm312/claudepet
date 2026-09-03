@@ -2,6 +2,7 @@
 //! indices, `.` = transparent). Mirrors `Sources/ClaudePet/Pet/Sprites.swift`.
 
 use super::brain::AnimState;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -298,6 +299,320 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
     m
 }
 
+/// A selectable alternate look for the pet. `Classic` is the original
+/// terracotta critter; the rest are built by `SKINS` below. Persisted on
+/// `PetState::skin` and carried on outbound `PetMessage`s (`sender_skin`) so a
+/// peer's chosen skin renders correctly on the receiving screen too.
+/// Mirrors `SkinId` in `Sources/ClaudePet/Pet/Skins.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkinId {
+    Classic,
+    Principal,
+    Clown,
+    Plant,
+}
+
+impl SkinId {
+    pub const ALL: [SkinId; 4] = [SkinId::Classic, SkinId::Principal, SkinId::Clown, SkinId::Plant];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            SkinId::Classic => "Classic",
+            SkinId::Principal => "Principal",
+            SkinId::Clown => "Clown",
+            SkinId::Plant => "Potted Plant",
+        }
+    }
+}
+
+impl Default for SkinId {
+    fn default() -> Self {
+        SkinId::Classic
+    }
+}
+
+/// A cosmetic extra worn on top of whichever skin is active. Persisted on
+/// `PetState::accessories` (any combination can be worn at once) and carried
+/// on outbound `PetMessage`s the same way a skin choice is. Mirrors
+/// `AccessoryId` in `Sources/ClaudePet/Pet/Skins.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccessoryId {
+    TopHat,
+    Glasses,
+}
+
+impl AccessoryId {
+    pub const ALL: [AccessoryId; 2] = [AccessoryId::TopHat, AccessoryId::Glasses];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AccessoryId::TopHat => "Top Hat",
+            AccessoryId::Glasses => "Glasses",
+        }
+    }
+}
+
+/// A full alternate look: its own palette plus a clip table shaped exactly
+/// like `CLIPS`. Every non-classic skin is built by recoloring and stamping a
+/// small "topper" patch onto the *same* rig `build_clips` already authored,
+/// rather than hand-drawing a second full set of poses - so every skin
+/// automatically covers every `AnimState` the classic pet does (full pose
+/// parity), and a topper reads correctly in every pose because every classic
+/// animation state keeps the head silhouette at the same rows/columns.
+/// Mirrors `SkinDef` in `Sources/ClaudePet/Pet/Skins.swift`.
+pub struct SkinDef {
+    pub palette: Vec<[u8; 4]>,
+    pub clips: HashMap<AnimState, SpriteClip>,
+}
+
+/// A small overlay stamped on top of whichever skin frame is currently
+/// showing: its own full-size grid (mostly index 0/transparent) plus its own
+/// tiny palette. Mirrors `AccessoryDef` in `Sources/ClaudePet/Pet/Skins.swift`.
+pub struct AccessoryDef {
+    pub palette: Vec<[u8; 4]>,
+    pub grid: Vec<Vec<u8>>,
+}
+
+fn blank_grid() -> Vec<Vec<u8>> {
+    vec![vec![0u8; GRID_SIZE]; GRID_SIZE]
+}
+
+fn remap(grid: &[Vec<u8>], table: &HashMap<u8, u8>) -> Vec<Vec<u8>> {
+    grid.iter()
+        .map(|row| row.iter().map(|v| *table.get(v).unwrap_or(v)).collect())
+        .collect()
+}
+
+fn stamp(grid: Vec<Vec<u8>>, patch: &[(usize, usize, u8)]) -> Vec<Vec<u8>> {
+    let mut g = grid;
+    for &(r, c, v) in patch {
+        if r < g.len() && c < g[r].len() {
+            g[r][c] = v;
+        }
+    }
+    g
+}
+
+/// Recolors every frame of the classic rig via `remap_table` (classic indices
+/// 1/2/3 -> this skin's own indices), then stamps the same `topper` patch onto
+/// every resulting frame.
+fn transform_clips(remap_table: &HashMap<u8, u8>, topper: &[(usize, usize, u8)]) -> HashMap<AnimState, SpriteClip> {
+    CLIPS
+        .iter()
+        .map(|(state, clip)| {
+            let frames = clip
+                .frames
+                .iter()
+                .map(|frame| stamp(remap(frame, remap_table), topper))
+                .collect();
+            (
+                *state,
+                SpriteClip { frames, frame_duration: clip.frame_duration, loops: clip.loops },
+            )
+        })
+        .collect()
+}
+
+fn identity_remap() -> HashMap<u8, u8> {
+    [(1u8, 1u8), (2, 2), (3, 3)].into_iter().collect()
+}
+
+/// Like `transform_clips`, but recolors rows above `head_boundary_row`
+/// through `head_map` and rows at/below it through `body_map`, instead of one
+/// flat index remap - used to give a skin a bare head/face color that's
+/// distinct from its neck-down body color (e.g. pale skin above a suit)
+/// without repainting outside the classic rig's own silhouette (0 stays
+/// transparent either way, so limb gaps in any given pose are untouched).
+/// Mirrors `transformRowSplit` in `Sources/ClaudePet/Pet/Skins.swift`.
+fn transform_clips_row_split(
+    head_boundary_row: usize,
+    head_map: &HashMap<u8, u8>,
+    body_map: &HashMap<u8, u8>,
+    topper: &[(usize, usize, u8)],
+) -> HashMap<AnimState, SpriteClip> {
+    CLIPS
+        .iter()
+        .map(|(state, clip)| {
+            let frames = clip
+                .frames
+                .iter()
+                .map(|frame| {
+                    let recolored: Vec<Vec<u8>> = frame
+                        .iter()
+                        .enumerate()
+                        .map(|(r, row)| {
+                            let map = if r < head_boundary_row { head_map } else { body_map };
+                            row.iter().map(|v| if *v == 0 { 0 } else { *map.get(v).unwrap_or(v) }).collect()
+                        })
+                        .collect();
+                    stamp(recolored, topper)
+                })
+                .collect();
+            (
+                *state,
+                SpriteClip { frames, frame_duration: clip.frame_duration, loops: clip.loops },
+            )
+        })
+        .collect()
+}
+
+pub static SKINS: LazyLock<HashMap<SkinId, SkinDef>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert(SkinId::Classic, SkinDef { palette: PALETTE.to_vec(), clips: CLIPS.iter().map(|(s, c)| (*s, SpriteClip { frames: c.frames.clone(), frame_duration: c.frame_duration, loops: c.loops })).collect() });
+    m.insert(SkinId::Principal, build_principal());
+    m.insert(SkinId::Clown, build_clown());
+    m.insert(SkinId::Plant, build_plant());
+    m
+});
+
+/// A bald, pale-skinned head above the neckline, a navy suit from the
+/// shoulders down, a shirt collar, and a necktie - styled after a supplied
+/// reference photo (bald, fair-skinned, dark suit, tie, round face), kept
+/// generic rather than naming the real person. The classic rig's rows 7-10
+/// are the head/face (including both eye rows) in every animation state, and
+/// row 11 on is shoulders/arms/legs, so that's the split used to recolor
+/// skin vs. suit without hand-authoring new poses. Mirrors `buildPrincipal`
+/// in `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_principal() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [236, 200, 170, 255], // 1 pale skin (head)
+        [19, 19, 19, 255],    // 2 eyes
+        [216, 126, 109, 255], // 3 flushed skin (angry)
+        [40, 50, 82, 255],    // 4 navy suit (body)
+        [140, 27, 27, 255],   // 5 necktie
+        [246, 240, 229, 255], // 6 shirt collar
+    ];
+    let mut topper = Vec::new();
+    // Shirt collar peeking out beside the tie knot.
+    topper.push((12, 5, 6u8));
+    topper.push((12, 10, 6u8));
+    // Necktie: a knot tapering to a single-column tie.
+    topper.push((12, 7, 5u8));
+    topper.push((12, 8, 5u8));
+    topper.push((13, 7, 5u8));
+    let head_map: HashMap<u8, u8> = [(1u8, 1u8), (2, 2), (3, 3)].into_iter().collect();
+    let body_map: HashMap<u8, u8> = [(1u8, 4u8), (2, 2), (3, 4)].into_iter().collect();
+    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper) }
+}
+
+/// Bright jumpsuit, a big round red nose, a rainbow fringe of hair flush
+/// against the hairline, poofs bulging out past either side of the head, and
+/// a ruffled collar. Mirrors `buildClown` in `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_clown() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [246, 203, 52, 255], // 1 jumpsuit
+        [19, 19, 19, 255],   // 2 eyes
+        [216, 104, 52, 255], // 3 angry tint
+        [218, 54, 52, 255],  // 4 nose + wig red
+        [52, 126, 218, 255], // 5 wig blue
+        [66, 170, 82, 255],  // 6 wig green
+    ];
+    let mut topper = Vec::new();
+    let wig_colors = [4u8, 5u8, 6u8];
+    // Rainbow wig fringe sitting directly on the hairline (row 6).
+    for (i, c) in (3..=12).enumerate() {
+        topper.push((6, c, wig_colors[i % wig_colors.len()]));
+    }
+    // Poofs bulging out past either side of the head.
+    for (i, r) in (6..=8).enumerate() {
+        let color = wig_colors[i % wig_colors.len()];
+        topper.push((r, 2, color));
+        topper.push((r, 3, color));
+        topper.push((r, 12, color));
+        topper.push((r, 13, color));
+    }
+    // Big round nose, centered between the eyes.
+    topper.push((9, 7, 4u8));
+    topper.push((9, 8, 4u8));
+    topper.push((10, 7, 4u8));
+    topper.push((10, 8, 4u8));
+    // Ruffled collar on the uniform chest band every pose shares.
+    let ruff = [4u8, 5u8, 6u8, 4u8, 5u8, 6u8, 4u8, 5u8];
+    for (i, c) in (4..=11).enumerate() {
+        topper.push((13, c, ruff[i]));
+    }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+}
+
+/// A terracotta pot with two green leaves sprouting from the top of the head,
+/// in place of hair.
+fn build_plant() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [197, 116, 87, 255], // 1 terracotta pot
+        [19, 19, 19, 255],   // 2 eyes
+        [206, 71, 59, 255],  // 3 angry tint
+        [55, 132, 62, 255],  // 4 leaves
+    ];
+    let mut topper = Vec::new();
+    for c in 4..=6 {
+        topper.push((2, c, 4u8));
+    }
+    for c in 9..=11 {
+        topper.push((2, c, 4u8));
+    }
+    for c in 3..=7 {
+        topper.push((3, c, 4u8));
+        topper.push((4, c, 4u8));
+    }
+    for c in 8..=12 {
+        topper.push((3, c, 4u8));
+        topper.push((4, c, 4u8));
+    }
+    for c in 4..=6 {
+        topper.push((5, c, 4u8));
+    }
+    for c in 9..=11 {
+        topper.push((5, c, 4u8));
+    }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+}
+
+pub static ACCESSORIES: LazyLock<HashMap<AccessoryId, AccessoryDef>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert(AccessoryId::TopHat, build_top_hat());
+    m.insert(AccessoryId::Glasses, build_glasses());
+    m
+});
+
+/// The classic rig's head always starts at row 7 (`CLIPS`' frames all share
+/// that top row), so the brim sits at row 6 - directly on the hairline, with
+/// no gap - on every skin and every animation state, rather than floating
+/// above a variable-height topper (hair/wig/leaves). Mirrors `buildTopHat` in
+/// `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_top_hat() -> AccessoryDef {
+    let mut g = blank_grid();
+    for c in 7..=8 {
+        g[2][c] = 1; // tapered crown top
+    }
+    for r in 3..=4 {
+        for c in 6..=9 {
+            g[r][c] = 1; // crown
+        }
+    }
+    for c in 5..=10 {
+        g[5][c] = 2; // hat band
+    }
+    for c in 3..=12 {
+        g[6][c] = 1; // brim, flush on the hairline
+    }
+    AccessoryDef { palette: vec![[0, 0, 0, 0], [19, 19, 19, 255], [140, 27, 27, 255]], grid: g }
+}
+
+fn build_glasses() -> AccessoryDef {
+    let mut g = blank_grid();
+    for c in 4..=11 {
+        g[9][c] = 1;
+    }
+    g[8][4] = 1;
+    g[8][11] = 1;
+    AccessoryDef { palette: vec![[0, 0, 0, 0], [19, 19, 19, 255]], grid: g }
+}
+
 /// The express-delivery horse, authored as a pixel grid in the same style as
 /// the pet (flat color blocks, `.` = transparent) rather than baked from a
 /// photo. Faces right: ears and head top-right, a maned neck sloping down into
@@ -413,6 +728,35 @@ mod tests {
             AnimState::Dance,
         ] {
             assert!(CLIPS.contains_key(&state), "missing clip for {state:?}");
+        }
+    }
+
+    #[test]
+    fn every_skin_covers_every_anim_state_with_full_size_frames() {
+        let states: std::collections::HashSet<_> = CLIPS.keys().copied().collect();
+        for id in SkinId::ALL {
+            let skin = SKINS.get(&id).unwrap_or_else(|| panic!("no SkinDef registered for {id:?}"));
+            let skin_states: std::collections::HashSet<_> = skin.clips.keys().copied().collect();
+            assert_eq!(skin_states, states, "{id:?} doesn't cover every anim state");
+            for (state, clip) in skin.clips.iter() {
+                for (fi, frame) in clip.frames.iter().enumerate() {
+                    assert_eq!(frame.len(), GRID_SIZE, "{id:?} {state:?} frame {fi} wrong row count");
+                    for row in frame {
+                        assert_eq!(row.len(), GRID_SIZE, "{id:?} {state:?} frame {fi} wrong row width");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_accessory_grid_is_full_size() {
+        for id in AccessoryId::ALL {
+            let accessory = ACCESSORIES.get(&id).unwrap_or_else(|| panic!("no AccessoryDef registered for {id:?}"));
+            assert_eq!(accessory.grid.len(), GRID_SIZE);
+            for row in &accessory.grid {
+                assert_eq!(row.len(), GRID_SIZE);
+            }
         }
     }
 

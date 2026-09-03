@@ -41,6 +41,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         readLetterItem.isHidden = true
         menu.addItem(readLetterItem)
 
+        menu.addItem(withAction("Customize Pet…", #selector(customizePet)))
         menu.addItem(withAction("Send Message…", #selector(sendMessage)))
         let peersMenuItem = withAction("Peers", nil)
         peersMenuItem.submenu = NSMenu()
@@ -121,6 +122,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func clean() { runtime?.clean() }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func sendMessage() { runtime?.presentMessageComposer() }
+    @objc private func customizePet() { runtime?.presentCustomizeWindow() }
     @objc private func readLetter() { runtime?.openUnreadLetter() }
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {

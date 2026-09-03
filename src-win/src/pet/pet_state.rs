@@ -1,7 +1,9 @@
 //! Persisted stat block for the pet + its JSON store.
 //! Mirrors `Sources/ClaudePet/Pet/PetState.swift`.
 
+use crate::pet::sprites::{AccessoryId, SkinId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Discrete mood buckets, derived from stats, that drive sprite choice, movement
@@ -54,6 +56,15 @@ pub struct PetState {
     /// rides along in the same `state.json` rather than a second config file.
     #[serde(default = "default_true")]
     pub auto_update: bool,
+
+    /// The pet's chosen look and worn accessories. Rides along in the same
+    /// `state.json` (see `auto_update` above for the precedent), defaulted so
+    /// a `state.json` saved before skins existed still decodes as
+    /// `SkinId::Classic` / no accessories instead of failing.
+    #[serde(default)]
+    pub skin: SkinId,
+    #[serde(default)]
+    pub accessories: HashSet<AccessoryId>,
 }
 
 fn default_true() -> bool {
@@ -71,6 +82,8 @@ impl Default for PetState {
             birth_date: now,
             last_tick: now,
             auto_update: true,
+            skin: SkinId::default(),
+            accessories: HashSet::new(),
         }
     }
 }
@@ -209,6 +222,8 @@ mod tests {
             birth_date: 0.0,
             last_tick,
             auto_update: true,
+            skin: SkinId::default(),
+            accessories: HashSet::new(),
         }
     }
 
@@ -273,5 +288,27 @@ mod tests {
         state.hunger = 10.0;
         state.energy = 10.0;
         assert_eq!(state.mood(), Mood::Hungry);
+    }
+
+    #[test]
+    fn skin_and_accessories_round_trip_through_json() {
+        let mut state = PetState::default();
+        state.skin = SkinId::Clown;
+        state.accessories.insert(AccessoryId::TopHat);
+        state.accessories.insert(AccessoryId::Glasses);
+
+        let json = serde_json::to_string(&state).unwrap();
+        let decoded: PetState = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.skin, SkinId::Clown);
+        assert_eq!(decoded.accessories.len(), 2);
+    }
+
+    #[test]
+    fn state_json_missing_skin_fields_decodes_as_classic_with_no_accessories() {
+        // Shaped like a state.json saved before skins existed.
+        let json = r#"{"hunger":80.0,"energy":100.0,"happiness":80.0,"cleanliness":100.0,"birth_date":0.0,"last_tick":0.0,"auto_update":true}"#;
+        let decoded: PetState = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.skin, SkinId::Classic);
+        assert!(decoded.accessories.is_empty());
     }
 }

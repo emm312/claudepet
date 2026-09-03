@@ -71,4 +71,25 @@ struct PetStateTests {
         state.energy = 10
         #expect(state.mood == .hungry)
     }
+
+    @Test func skinAndAccessoriesRoundTripThroughEncodeDecode() throws {
+        var state = PetState()
+        state.skinId = .clown
+        state.accessoryIds = [.topHat, .glasses]
+
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(PetState.self, from: data)
+        #expect(decoded.skinId == .clown)
+        #expect(decoded.accessoryIds == [.topHat, .glasses])
+    }
+
+    @Test func stateJSONMissingSkinFieldsDecodesAsClassicWithNoAccessories() throws {
+        // Shaped like a state.json saved before skins existed.
+        let json = """
+        {"hunger":80,"energy":100,"happiness":80,"cleanliness":100,"birthDate":0,"lastTick":0,"autoUpdatesEnabled":true}
+        """
+        let decoded = try JSONDecoder().decode(PetState.self, from: Data(json.utf8))
+        #expect(decoded.skinId == .classic)
+        #expect(decoded.accessoryIds.isEmpty)
+    }
 }

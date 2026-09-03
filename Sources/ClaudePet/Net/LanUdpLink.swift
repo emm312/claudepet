@@ -394,6 +394,10 @@ private struct LanWireMessage: Codable {
     /// `.ack` only - see `PetMessage.timeToReturn`. Optional on the wire so a
     /// pre-this-field sender on either platform still decodes.
     let timeToReturn: Double?
+    /// See `PetMessage.senderSkin`/`senderAccessories`. Optional on the wire so
+    /// a pre-skins sender on either platform still decodes.
+    let senderSkin: String?
+    let senderAccessories: [String]?
 
     init(_ message: PetMessage) {
         id = message.id.uuidString.lowercased()
@@ -404,6 +408,8 @@ private struct LanWireMessage: Codable {
         sentAt = message.sentAt.timeIntervalSince1970
         express = message.express
         timeToReturn = message.timeToReturn
+        senderSkin = message.senderSkin?.rawValue
+        senderAccessories = message.senderAccessories?.map { $0.rawValue }
     }
 
     func toPetMessage() -> PetMessage? {
@@ -419,7 +425,9 @@ private struct LanWireMessage: Codable {
             exitEdge: edge,
             sentAt: Date(timeIntervalSince1970: sentAt),
             express: express,
-            timeToReturn: timeToReturn
+            timeToReturn: timeToReturn,
+            senderSkin: senderSkin.flatMap(SkinId.init(rawValue:)),
+            senderAccessories: senderAccessories?.compactMap(AccessoryId.init(rawValue:))
         )
     }
 }

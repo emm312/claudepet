@@ -33,12 +33,19 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// predates it still loads (the receiver then falls back to
     /// `Courier.defaultWait`).
     let timeToReturn: TimeInterval?
+    /// The sender's chosen skin/accessories at send time, so a peer's pet
+    /// renders with their own look while visiting rather than always showing
+    /// classic. Optional-decoded so a message from a build that predates skins
+    /// still loads (the receiver then falls back to `.classic` / no accessories,
+    /// same tolerance as `express`).
+    let senderSkin: SkinId?
+    let senderAccessories: [AccessoryId]?
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn
+        case id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn, senderSkin, senderAccessories
     }
 
-    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false, timeToReturn: TimeInterval? = nil) {
+    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false, timeToReturn: TimeInterval? = nil, senderSkin: SkinId? = nil, senderAccessories: [AccessoryId]? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
@@ -47,12 +54,15 @@ nonisolated struct PetMessage: Codable, Sendable {
         self.sentAt = sentAt
         self.express = express
         self.timeToReturn = timeToReturn
+        self.senderSkin = senderSkin
+        self.senderAccessories = senderAccessories
     }
 
     // Field-for-field identical to the compiler-synthesized decoder (same keys,
     // same `Date` decoding via the decoder's own strategy - the MultipeerConnectivity
-    // path is unchanged), with added tolerances: `express` and `timeToReturn`
-    // are optional so a message from a build that predates either still loads.
+    // path is unchanged), with added tolerances: `express`, `timeToReturn`,
+    // `senderSkin`, and `senderAccessories` are optional so a message from a
+    // build that predates any of them still loads.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -63,10 +73,12 @@ nonisolated struct PetMessage: Codable, Sendable {
         sentAt = try c.decode(Date.self, forKey: .sentAt)
         express = try c.decodeIfPresent(Bool.self, forKey: .express) ?? false
         timeToReturn = try c.decodeIfPresent(TimeInterval.self, forKey: .timeToReturn)
+        senderSkin = try c.decodeIfPresent(SkinId.self, forKey: .senderSkin)
+        senderAccessories = try c.decodeIfPresent([AccessoryId].self, forKey: .senderAccessories)
     }
 
-    static func deliver(text: String, senderName: String, exitEdge: Edge, express: Bool = false) -> PetMessage {
-        PetMessage(id: UUID(), kind: .deliver, text: text, senderName: senderName, exitEdge: exitEdge, sentAt: Date(), express: express)
+    static func deliver(text: String, senderName: String, exitEdge: Edge, express: Bool = false, senderSkin: SkinId = .classic, senderAccessories: [AccessoryId] = []) -> PetMessage {
+        PetMessage(id: UUID(), kind: .deliver, text: text, senderName: senderName, exitEdge: exitEdge, sentAt: Date(), express: express, senderSkin: senderSkin, senderAccessories: senderAccessories)
     }
 
     /// The ack for a given delivery - correlates by `id` so a stray/duplicate ack
@@ -76,6 +88,6 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// of learning the acker's address. `timeToReturn` is how many more seconds
     /// the acker's own visitor animation needs, computed on the acker's screen.
     func makeAck(from localName: String, timeToReturn: TimeInterval) -> PetMessage {
-        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express, timeToReturn: timeToReturn)
+        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express, timeToReturn: timeToReturn, senderSkin: senderSkin, senderAccessories: senderAccessories)
     }
 }

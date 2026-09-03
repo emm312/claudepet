@@ -69,6 +69,15 @@ pub struct PetMessage {
     /// pre-attachment senders on either platform still decode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<Attachment>,
+    /// `Ack` only: how many more seconds the acker's own visitor animation
+    /// (arriving -> handing -> leaving) needs to finish, computed on the
+    /// acker's own screen at the moment it received the delivery. Lets the
+    /// sender's courier wait exactly that long instead of guessing - see
+    /// `pet::courier::received_ack`. Optional on the wire so pre-this-field
+    /// senders on either platform still decode (the receiver then falls back
+    /// to `pet::courier::DEFAULT_WAIT`).
+    #[serde(rename = "timeToReturn", default, skip_serializing_if = "Option::is_none")]
+    pub time_to_return: Option<f64>,
 }
 
 impl PetMessage {
@@ -82,6 +91,7 @@ impl PetMessage {
             sent_at: crate::pet::pet_state::now_secs(),
             express,
             attachment: None,
+            time_to_return: None,
         }
     }
 
@@ -90,7 +100,9 @@ impl PetMessage {
     /// *acker's* own name, not the original sender's - the old behavior of
     /// cloning the delivery's `senderName` made the sender upsert its own name
     /// into its peer map on receipt instead of learning the acker's address.
-    pub fn make_ack(&self, local_name: &str) -> PetMessage {
+    /// `time_to_return` is how many more seconds the acker's own visitor
+    /// animation needs, computed on the acker's screen - see the field's doc.
+    pub fn make_ack(&self, local_name: &str, time_to_return: f64) -> PetMessage {
         PetMessage {
             id: self.id.clone(),
             kind: Kind::Ack,
@@ -100,6 +112,7 @@ impl PetMessage {
             sent_at: crate::pet::pet_state::now_secs(),
             express: self.express,
             attachment: None,
+            time_to_return: Some(time_to_return),
         }
     }
 }
@@ -171,12 +184,13 @@ mod tests {
     #[test]
     fn ack_preserves_id_and_clears_text() {
         let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false);
-        let ack = m.make_ack("DeskB");
+        let ack = m.make_ack("DeskB", 1.5);
         assert_eq!(ack.id, m.id);
         assert_eq!(ack.kind, Kind::Ack);
         assert!(ack.text.is_empty());
         assert_eq!(ack.sender_name, "DeskB");
         assert_eq!(ack.exit_edge, Edge::Right);
+        assert_eq!(ack.time_to_return, Some(1.5));
     }
 
     #[test]
@@ -221,15 +235,23 @@ mod tests {
             sent_at: 1_700_000_000.5,
             express: true,
             attachment: None,
+            time_to_return: None,
         };
         assert_eq!(serde_json::to_string(&same).unwrap(), json);
 
-        // `express` is optional on the wire - a sender that omits it still decodes.
+        // `express` and `timeToReturn` are optional on the wire - a sender that
+        // omits both still decodes.
         let legacy = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25}"#;
         let ack: PetMessage = serde_json::from_str(legacy).unwrap();
         assert_eq!(ack.kind, Kind::Ack);
         assert!(ack.text.is_empty());
         assert!(!ack.express);
+        assert_eq!(ack.time_to_return, None);
         assert_eq!(ack.id, m.id);
+
+        // A modern ack carries `timeToReturn` too.
+        let modern_ack = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"ack","text":"","senderName":"DeskMac","exitEdge":"left","sentAt":1700000001.25,"timeToReturn":2.75}"#;
+        let ack: PetMessage = serde_json::from_str(modern_ack).unwrap();
+        assert_eq!(ack.time_to_return, Some(2.75));
     }
 }

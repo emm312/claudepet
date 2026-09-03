@@ -696,7 +696,8 @@ impl Runtime {
                     self.outbound_pending.remove(&from);
                     self.outbound_acked.insert(from);
                     if let Some(c) = &mut self.outbound {
-                        c.received_ack();
+                        let wait = message.time_to_return.unwrap_or(crate::pet::courier::DEFAULT_WAIT);
+                        c.received_ack(now, wait);
                     }
                 }
             }
@@ -707,12 +708,43 @@ impl Runtime {
                 }
                 // Ack right away - the sender's timeout races real time, not the
                 // visitor's walk-in/handoff/walk-out animation, so a slow or wide
-                // screen no longer makes a delivered letter look "bounced".
-                self.transport.send(&message.make_ack(&self.local_name), &from);
+                // screen no longer makes a delivered letter look "bounced". The
+                // ack still tells the sender how long that animation will take
+                // (computed on this screen) so its courier can wait for it
+                // instead of turning around the instant the ack lands.
+                let (_, off_screen_x, handoff_x, _) = self.inbound_geometry(&message);
+                let mult = if message.express { EXPRESS_SPEED_MULT } else { 1.0 };
+                let time_to_return =
+                    crate::pet::courier::estimate_round_trip_duration((off_screen_x - handoff_x).abs(), mult);
+                self.transport.send(&message.make_ack(&self.local_name, time_to_return), &from);
                 self.pending.push_back(message);
                 self.start_next_delivery_if_idle(now);
             }
         }
+    }
+
+    /// The entry edge, off-screen/handoff x positions, and work-area bottom an
+    /// inbound courier for `message` would use, anchored on the resident
+    /// pet's resting x (not the live `pet_x` - while an outbound trip is also
+    /// in flight, `pet_x` is mid-transit and using it here would place the
+    /// visitor at a bogus, possibly off-screen spot). Shared by
+    /// `start_next_delivery_if_idle` and the ack's `time_to_return` estimate
+    /// so both agree on the same trip.
+    fn inbound_geometry(&self, message: &PetMessage) -> (crate::net::Edge, f64, f64, f64) {
+        let base_x = self.outbound.as_ref().map_or(self.pet_x, |c| c.home_x());
+        let center_x = base_x + SPRITE_PX as f64 / 2.0;
+        let area = geometry::work_area_containing(center_x, self.pet_y + SPRITE_PX as f64 / 2.0);
+        let entry_edge = message.exit_edge.opposite();
+        let off_screen_x = match entry_edge {
+            crate::net::Edge::Right => area.right + SPRITE_PX as f64,
+            crate::net::Edge::Left => area.left - SPRITE_PX as f64,
+        };
+        let handoff_offset = 60.0;
+        let handoff_x = match entry_edge {
+            crate::net::Edge::Right => base_x + handoff_offset,
+            crate::net::Edge::Left => base_x - handoff_offset,
+        };
+        (entry_edge, off_screen_x, handoff_x, area.bottom)
     }
 
     fn start_next_delivery_if_idle(&mut self, now: f64) {
@@ -723,21 +755,10 @@ impl Runtime {
             return;
         };
 
-        let center_x = self.pet_x + SPRITE_PX as f64 / 2.0;
-        let area = geometry::work_area_containing(center_x, self.pet_y + SPRITE_PX as f64 / 2.0);
-        let entry_edge = message.exit_edge.opposite();
-        let off_screen_x = match entry_edge {
-            crate::net::Edge::Right => area.right + SPRITE_PX as f64,
-            crate::net::Edge::Left => area.left - SPRITE_PX as f64,
-        };
-        let handoff_offset = 60.0;
-        let handoff_x = match entry_edge {
-            crate::net::Edge::Right => self.pet_x + handoff_offset,
-            crate::net::Edge::Left => self.pet_x - handoff_offset,
-        };
+        let (entry_edge, off_screen_x, handoff_x, area_bottom) = self.inbound_geometry(&message);
 
         self.visitor_x = off_screen_x;
-        self.visitor_y = area.bottom - SPRITE_PX as f64;
+        self.visitor_y = area_bottom - SPRITE_PX as f64;
         self.visitor_frame_index = 0;
         self.visitor_frame_elapsed = 0.0;
         self.inbound_handed_off = false;
@@ -1081,14 +1102,25 @@ mod tests {
         assert_eq!(sent[0].1, "PeerX");
         let delivered = sent[0].0.clone();
 
-        // The peer acks.
+        // The peer acks almost immediately, saying its own visitor animation
+        // still needs 2s to finish.
         fake.inbox
             .lock()
             .unwrap()
-            .push_back((delivered.make_ack("PeerX"), "PeerX".into()));
+            .push_back((delivered.make_ack("PeerX", 2.0), "PeerX".into()));
         rt.tick_at(1000.0 + FAR + 0.5);
 
         assert!(rt.t_ack(), "ack should have been recorded");
+        // Too soon after entering Away to honor it yet - the courier waits out
+        // the peer's own reported `time_to_return` instead of turning around
+        // the instant the ack lands.
+        assert_eq!(
+            rt.t_outbound_phase(),
+            Some(Phase::Away),
+            "an instant ack shouldn't skip the recipient's reported wait"
+        );
+
+        rt.tick_at(1000.0 + FAR + 2.5); // past the reported wait
         assert!(matches!(
             rt.t_outbound_phase(),
             Some(Phase::Returning) | Some(Phase::Done) | None

@@ -44,7 +44,7 @@ struct LanUdpLinkTests {
         // B acks back - this is the path that was broken: an ack sent from a
         // fresh ephemeral port (or a hung requiredLocalEndpoint connection)
         // never reached A.
-        b.send(sent.makeAck(from: nameB), to: nameA)
+        b.send(sent.makeAck(from: nameB, timeToReturn: 1.5), to: nameA)
 
         let acked = try await waitUntil(timeout: 5) { aReceivedAck != nil }
         #expect(acked, "A should receive B's ack")

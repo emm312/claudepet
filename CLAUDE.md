@@ -82,14 +82,18 @@ the express checkbox (`compose.rs`'s Mac-side counterpart) so both directions ca
 express; the express speed multiplier is 3x on both platforms (`Courier.expressSpeedMultiplier` /
 `src-win/src/runtime.rs`'s `EXPRESS_SPEED_MULT` — keep these in sync if either changes).
 
-**Not yet compiled**: the click-to-open received-letter changes to `Runtime.swift`, `Overlay/
-OverlayView.swift`, `Pet/Courier.swift`, `UI/StatusItem.swift` and `Tests/ClaudePetTests/
-CourierTests.swift` were written on the Windows dev box, which has no Swift toolchain — **none of them
-have been through `swift build` or `swift test`**. Do both on a Mac before relying on macOS↔Windows
-messaging. (An earlier note claimed the horse/mail + transport-`stop()` carve-out had been
-`swift build`-verified on a Mac; that was a prior session's claim about `546aa0c`-era code and does
-not cover anything in this change.) The Windows (Rust) side of this change *is* built and tested —
-`cargo test`, 46 passing — and was run on a real desktop.
+**Not yet compiled**: the click-to-open received-letter changes to `Overlay/OverlayView.swift` and
+`UI/StatusItem.swift` were written on the Windows dev box, which has no Swift toolchain — they have
+not been through `swift build` or `swift test` on a Mac. `Runtime.swift`, `Pet/Courier.swift`, and
+`Tests/ClaudePetTests/CourierTests.swift`, along with the later ack-timing rework (`Net/PetMessage.swift`,
+`Net/LanUdpLink.swift`, `Tests/ClaudePetTests/LanUdpLinkTests.swift`) *have* since been through
+`swift build`/`swift build --build-tests` on a Mac with a real toolchain and compile clean, but the
+test binary itself couldn't actually be *executed* in that session's sandbox (no Xcode, only Command
+Line Tools; swift-testing's `Testing.framework` needs a newer OS than the deployment target and the
+runner produced no output) - so `swift test` passing is still unverified. Run it for real on a Mac
+before relying on macOS↔Windows messaging. The Windows (Rust) side of the ack-timing rework is
+`cargo build --target x86_64-pc-windows-gnu` clean but likewise unexecuted (no Windows runtime to run
+the cross-compiled `.exe` against) - `cargo test` on a real Windows box is still the source of truth.
 
 ---
 
@@ -172,11 +176,16 @@ datagrams to the peer's advertised address:port. Peer identity is the advertised
 **macOS ↔ Windows messaging** works via the same link: the macOS app on this branch runs
 `CompositeTransport([MultipeerLink(), LanUdpLink()])`, where `LanUdpLink` speaks the identical
 Bonjour type (`_claudepet._udp`) and JSON shape. Wire format (both sides): a flat object
-`{ id, kind, text, senderName, exitEdge, sentAt, express }` — `id` a lowercase dashed UUID, `kind`
-`"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds, `express` a bool
-(optional — omitted reads as `false`). The Rust `net::tests::wire_contract_*` test pins the exact
-byte string. Mac↔Mac still rides MultipeerConnectivity; `CompositeTransport` de-dups deliveries by
-`id` so a peer reachable on both links isn't served twice.
+`{ id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn }` — `id` a lowercase dashed
+UUID, `kind` `"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds, `express` a
+bool (optional — omitted reads as `false`). `timeToReturn` is `.ack`-only: how many more seconds the
+acker's own visitor animation (arriving → handing → leaving) needs, computed on the acker's screen at
+the moment it received the delivery, so the sender's courier can wait exactly that long instead of
+turning around the instant the ack lands (`Courier.receivedAck`/`received_ack`'s `wait` parameter) —
+optional, and a missing value (older peer, or on a `.deliver`) falls back to `Courier.defaultWait`/
+`courier::DEFAULT_WAIT` (2s). The Rust `net::tests::wire_contract_*` test pins the exact byte string.
+Mac↔Mac still rides MultipeerConnectivity; `CompositeTransport` de-dups deliveries by `id` so a peer
+reachable on both links isn't served twice.
 
 **Courier props** (`src-win/src/pet/sprites.rs`'s `HORSE_FRAMES`/`MAIL_GRID` - pixel grids, not baked
 JPEGs; see the horse/mail section above): the resident pet holds the mail on every courier leg it

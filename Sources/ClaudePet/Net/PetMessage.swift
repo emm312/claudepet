@@ -25,12 +25,20 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// "express" delivery - the courier rides the horse (windows-branch feature).
     /// Optional-decoded so a message from a build that predates it still loads.
     let express: Bool
+    /// `.ack` only: how many more seconds the acker's own visitor animation
+    /// (arriving -> handing -> leaving) needs to finish, computed on the
+    /// acker's own screen at the moment it received the delivery. Lets the
+    /// sender's courier wait exactly that long instead of guessing - see
+    /// `Courier.receivedAck`. Optional-decoded so a message from a build that
+    /// predates it still loads (the receiver then falls back to
+    /// `Courier.defaultWait`).
+    let timeToReturn: TimeInterval?
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, text, senderName, exitEdge, sentAt, express
+        case id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn
     }
 
-    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false) {
+    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false, timeToReturn: TimeInterval? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
@@ -38,12 +46,13 @@ nonisolated struct PetMessage: Codable, Sendable {
         self.exitEdge = exitEdge
         self.sentAt = sentAt
         self.express = express
+        self.timeToReturn = timeToReturn
     }
 
     // Field-for-field identical to the compiler-synthesized decoder (same keys,
     // same `Date` decoding via the decoder's own strategy - the MultipeerConnectivity
-    // path is unchanged), with one added tolerance: `express` is optional so a
-    // message from a build that predates it still loads.
+    // path is unchanged), with added tolerances: `express` and `timeToReturn`
+    // are optional so a message from a build that predates either still loads.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -53,6 +62,7 @@ nonisolated struct PetMessage: Codable, Sendable {
         exitEdge = try c.decode(Edge.self, forKey: .exitEdge)
         sentAt = try c.decode(Date.self, forKey: .sentAt)
         express = try c.decodeIfPresent(Bool.self, forKey: .express) ?? false
+        timeToReturn = try c.decodeIfPresent(TimeInterval.self, forKey: .timeToReturn)
     }
 
     static func deliver(text: String, senderName: String, exitEdge: Edge, express: Bool = false) -> PetMessage {
@@ -63,8 +73,9 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// can't resolve the wrong outbound courier. `senderName` is the *acker's*
     /// own name, not the original sender's - cloning the delivery's `senderName`
     /// made the sender upsert its own name into its peer map on receipt instead
-    /// of learning the acker's address.
-    func makeAck(from localName: String) -> PetMessage {
-        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express)
+    /// of learning the acker's address. `timeToReturn` is how many more seconds
+    /// the acker's own visitor animation needs, computed on the acker's screen.
+    func makeAck(from localName: String, timeToReturn: TimeInterval) -> PetMessage {
+        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express, timeToReturn: timeToReturn)
     }
 }

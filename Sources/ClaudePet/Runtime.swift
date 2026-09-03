@@ -347,15 +347,41 @@ final class Runtime {
             guard message.id == outboundMessageID else { return }
             outboundPendingPeers.remove(peerName)
             outboundAckedPeers.insert(peerName)
-            outboundCourier?.receivedAck()
+            let wait = message.timeToReturn ?? Courier.defaultWait
+            outboundCourier?.receivedAck(wait: wait, now: Date())
         case .deliver:
             // Ack right away - the sender's timeout races real time, not the
             // visitor's walk-in/handoff/walk-out animation, so a slow or wide
-            // screen no longer makes a delivered letter look "bounced".
-            transport.send(message.makeAck(from: MultipeerLink.localDisplayName), to: peerName)
+            // screen no longer makes a delivered letter look "bounced". The
+            // ack still tells the sender how long that animation will take
+            // (computed on this screen) so its courier can wait for it instead
+            // of turning around the instant the ack lands.
+            let (_, offScreenX, handoffX) = inboundGeometry(for: message)
+            let timeToReturn = Courier.estimateRoundTripDuration(oneWayDistance: offScreenX - handoffX, express: message.express)
+            transport.send(message.makeAck(from: MultipeerLink.localDisplayName, timeToReturn: timeToReturn), to: peerName)
             pendingDeliveries.append(message)
             startNextDeliveryIfIdle()
         }
+    }
+
+    /// The entry edge and off-screen/handoff x positions an inbound courier
+    /// for `message` would use, anchored on the resident pet's resting x (not
+    /// the live window origin - while an outbound trip is also in flight, the
+    /// window is mid-transit and using it here would place the visitor at a
+    /// bogus, possibly off-screen spot). Shared by `startNextDeliveryIfIdle`
+    /// and the ack's `timeToReturn` estimate so both agree on the same trip.
+    private func inboundGeometry(for message: PetMessage) -> (PetMessage.Edge, CGFloat, CGFloat) {
+        let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
+            ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let entryEdge = message.exitEdge.opposite
+        let width = window.frame.width
+        let offScreenX = entryEdge == .right ? screen.maxX + width : screen.minX - width
+        let handoffOffset: CGFloat = 60
+        let baseX = outboundCourier?.restingX ?? window.frame.origin.x
+        let handoffX = entryEdge == .right
+            ? baseX + handoffOffset
+            : baseX - handoffOffset
+        return (entryEdge, offScreenX, handoffX)
     }
 
     private func startNextDeliveryIfIdle() {
@@ -363,15 +389,7 @@ final class Runtime {
         let message = pendingDeliveries.removeFirst()
         inboundMessage = message
 
-        let screen = ScreenGeometry.screen(containing: window.frame.origin)?.visibleFrame
-            ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let entryEdge = message.exitEdge.opposite
-        let width = window.frame.width
-        let offScreenX = entryEdge == .right ? screen.maxX + width : screen.minX - width
-        let handoffOffset: CGFloat = 60
-        let handoffX = entryEdge == .right
-            ? window.frame.origin.x + handoffOffset
-            : window.frame.origin.x - handoffOffset
+        let (entryEdge, offScreenX, handoffX) = inboundGeometry(for: message)
 
         visitorGroundY = window.frame.origin.y
         visitorBaseY = visitorGroundY + (message.express ? HorseSprite.riderLift : 0)

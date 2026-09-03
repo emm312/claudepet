@@ -391,6 +391,9 @@ private struct LanWireMessage: Codable {
     let exitEdge: String
     let sentAt: Double
     let express: Bool
+    /// `.ack` only - see `PetMessage.timeToReturn`. Optional on the wire so a
+    /// pre-this-field sender on either platform still decodes.
+    let timeToReturn: Double?
 
     init(_ message: PetMessage) {
         id = message.id.uuidString.lowercased()
@@ -400,6 +403,7 @@ private struct LanWireMessage: Codable {
         exitEdge = message.exitEdge.rawValue
         sentAt = message.sentAt.timeIntervalSince1970
         express = message.express
+        timeToReturn = message.timeToReturn
     }
 
     func toPetMessage() -> PetMessage? {
@@ -414,7 +418,8 @@ private struct LanWireMessage: Codable {
             senderName: senderName,
             exitEdge: edge,
             sentAt: Date(timeIntervalSince1970: sentAt),
-            express: express
+            express: express,
+            timeToReturn: timeToReturn
         )
     }
 }

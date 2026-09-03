@@ -16,18 +16,38 @@ struct CourierTests {
         #expect(abs(courier.x - 300) < 0.01)
     }
 
-    @Test func outboundReturnsHomeOnAck() {
+    @Test func outboundReturnsHomeAfterTheRecipientsWaitElapses() {
         let start = Date(timeIntervalSince1970: 0)
         let courier = Courier.outbound(startX: 100, homeX: 100, offScreenX: 300, edge: .right, now: start)
-        courier.tick(now: start.addingTimeInterval(3)) // now .away
+        courier.tick(now: start.addingTimeInterval(3)) // now .away (entered at start+3)
         #expect(courier.phase == .away)
 
-        courier.receivedAck()
+        // Ack arrives instantly but says the recipient's own visitor needs 2s.
+        courier.receivedAck(wait: 2, now: start.addingTimeInterval(3.01))
+        // Too soon - the horse shouldn't beat the recipient's own animation.
+        #expect(courier.phase == .away)
+
+        courier.tick(now: start.addingTimeInterval(4.5)) // still short of start+3+2
+        #expect(courier.phase == .away)
+
+        courier.tick(now: start.addingTimeInterval(5.01)) // now past start+3+2 - the pending ack applies
         #expect(courier.phase == .returning)
 
-        courier.tick(now: start.addingTimeInterval(6))
+        courier.tick(now: start.addingTimeInterval(8.01))
         #expect(courier.phase == .done)
         #expect(abs(courier.x - 100) < 0.01)
+    }
+
+    @Test func ackThatArrivesAfterTheWaitAlreadyElapsedReturnsImmediately() {
+        let start = Date(timeIntervalSince1970: 0)
+        let courier = Courier.outbound(startX: 100, homeX: 100, offScreenX: 300, edge: .right, now: start)
+        courier.tick(now: start.addingTimeInterval(3))
+        #expect(courier.phase == .away)
+
+        // The recipient's own animation only needed 1s, and this ack shows up
+        // well after that - nothing left to wait for.
+        courier.receivedAck(wait: 1, now: start.addingTimeInterval(6))
+        #expect(courier.phase == .returning)
     }
 
     @Test func outboundTimesOutAndReturnsWithoutAck() {
@@ -49,7 +69,7 @@ struct CourierTests {
         let start = Date(timeIntervalSince1970: 0)
         let courier = Courier.outbound(startX: 100, homeX: 100, offScreenX: 300, edge: .right, now: start)
         #expect(courier.phase == .departing)
-        courier.receivedAck() // no-op while still departing
+        courier.receivedAck(wait: 2, now: start) // doesn't change phase while still departing
         #expect(courier.phase == .departing)
     }
 

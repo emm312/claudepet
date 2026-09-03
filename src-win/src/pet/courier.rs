@@ -42,7 +42,23 @@ pub const HANDOFF_DURATION: f64 = 0.5;
 /// got through - the ack only races a *successful* delivery, so the extra wait
 /// mostly costs a false-negative nothing.
 const AWAY_TIMEOUT: f64 = 15.0;
+/// Fallback wait applied on an ack that doesn't carry its own
+/// `time_to_return` (an older peer's wire message, pre-dating that field).
+/// Otherwise the sender has no idea how long the recipient's own visitor
+/// animation will take and would turn around before it's actually done.
+pub const DEFAULT_WAIT: f64 = 2.0;
 const ARRIVAL_EPSILON: f64 = 2.0;
+
+/// How long a courier's `Arriving -> Handing -> Leaving` leg takes to play out
+/// on the receiving screen, given the one-way arrival distance (== the leaving
+/// distance, since both run between the same off-screen point and handoff
+/// point) and the delivery's speed multiplier (>1.0 for express/horse). The
+/// receiver computes this for its own screen and hands it back on the ack, so
+/// the sender's `Away` phase can wait exactly that long instead of guessing.
+pub fn estimate_round_trip_duration(one_way_distance: f64, speed_mult: f64) -> f64 {
+    let speed = SPEED * speed_mult.max(0.1);
+    2.0 * one_way_distance.abs() / speed + HANDOFF_DURATION
+}
 
 pub struct Courier {
     phase: Phase,
@@ -56,13 +72,24 @@ pub struct Courier {
     home_x: f64,
     handoff_x: f64,
     away_deadline: f64,
+    /// When `Away` was entered - the anchor `received_ack`'s `wait` (the
+    /// recipient's own animation duration) counts forward from.
+    away_entered_at: f64,
+    /// Earliest moment `Away` is allowed to end on an ack, once known - see
+    /// `received_ack`. Irrelevant once `Away` is left.
+    away_min_end_time: f64,
     handoff_end_time: f64,
     last_tick_date: f64,
     speed: f64,
-    /// Set when an ack arrives during `Departing`, so `Away` is skipped on
-    /// entry instead of making a delivery that already succeeded wait out the
-    /// full timeout.
+    /// Set when an ack arrives before it's allowed to end `Away` yet - either
+    /// still `Departing` (so `Away` is skipped on entry instead of making a
+    /// delivery that already succeeded wait out the full timeout) or already
+    /// `Away` but short of the recipient's own animation finishing. Applied
+    /// the moment it's safe.
     ack_pending: bool,
+    /// The `wait` from an ack that arrived during `Departing`, before
+    /// `away_entered_at` is even known yet - applied once `Away` begins.
+    pending_wait: f64,
 }
 
 impl Courier {
@@ -115,10 +142,13 @@ impl Courier {
             home_x,
             handoff_x,
             away_deadline,
+            away_entered_at: f64::NEG_INFINITY,
+            away_min_end_time: f64::NEG_INFINITY,
             handoff_end_time: f64::NEG_INFINITY,
             last_tick_date: now,
             speed: SPEED * speed_mult.max(0.1),
             ack_pending: false,
+            pending_wait: 0.0,
         }
     }
 
@@ -138,6 +168,13 @@ impl Courier {
     /// True while the outbound pet's window should stay hidden.
     pub fn is_away(&self) -> bool {
         self.phase == Phase::Away
+    }
+    /// The resting x position this courier departed from / returns to. Used
+    /// by the runtime to anchor an inbound delivery's handoff point off of
+    /// the resident pet's actual resting spot when an outbound trip is
+    /// simultaneously in flight and has `pet_x` off mid-transit.
+    pub fn home_x(&self) -> f64 {
+        self.home_x
     }
 
     /// `Walk` while moving, `Idle` while paused (away, or mid handoff).
@@ -160,16 +197,18 @@ impl Courier {
             Phase::Departing => {
                 self.move_toward(self.off_screen_x, dt);
                 if self.reached(self.off_screen_x) {
+                    self.phase = Phase::Away;
+                    self.away_deadline = now + AWAY_TIMEOUT;
+                    self.away_entered_at = now;
                     if self.ack_pending {
-                        self.phase = Phase::Returning;
-                    } else {
-                        self.phase = Phase::Away;
-                        self.away_deadline = now + AWAY_TIMEOUT;
+                        self.away_min_end_time = now + self.pending_wait;
                     }
                 }
             }
             Phase::Away => {
                 if now >= self.away_deadline {
+                    self.phase = Phase::Returning;
+                } else if self.ack_pending && now >= self.away_min_end_time {
                     self.phase = Phase::Returning;
                 }
             }
@@ -203,13 +242,29 @@ impl Courier {
     }
 
     /// Called once the peer's ack arrives, so the outbound pet doesn't sit
-    /// waiting out the full timeout when delivery actually succeeded. An ack
+    /// waiting out the full timeout when delivery actually succeeded. `wait`
+    /// is how long the recipient said its own visitor animation still needs
+    /// (the ack's `time_to_return`, computed on their screen) - the horse
+    /// isn't allowed to turn around until that long after `Away` began, so it
+    /// doesn't beat the recipient's own pet finishing the handoff. An ack
     /// that lands while still `Departing` (a fast LAN can beat the walk-off
-    /// animation) is recorded and applied the moment `Away` would begin.
-    pub fn received_ack(&mut self) {
+    /// animation) is recorded and applied the moment `Away` begins.
+    pub fn received_ack(&mut self, now: f64, wait: f64) {
+        let wait = wait.max(0.0);
         match self.phase {
-            Phase::Away => self.phase = Phase::Returning,
-            Phase::Departing => self.ack_pending = true,
+            Phase::Away => {
+                let target = self.away_entered_at + wait;
+                if now >= target {
+                    self.phase = Phase::Returning;
+                } else {
+                    self.ack_pending = true;
+                    self.away_min_end_time = target;
+                }
+            }
+            Phase::Departing => {
+                self.ack_pending = true;
+                self.pending_wait = wait;
+            }
             _ => {}
         }
     }
@@ -263,18 +318,39 @@ mod tests {
     }
 
     #[test]
-    fn outbound_returns_home_on_ack() {
+    fn outbound_returns_home_after_the_recipients_wait_elapses() {
+        let start = 0.0;
+        let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
+        c.tick(start + 3.0); // reaches the edge -> Away (entered_at = start+3)
+        assert_eq!(c.phase(), Phase::Away);
+
+        // Ack arrives instantly but says the recipient's own visitor needs 2s.
+        c.received_ack(start + 3.01, 2.0);
+        // Too soon - the horse shouldn't beat the recipient's own animation.
+        assert_eq!(c.phase(), Phase::Away);
+
+        c.tick(start + 4.5); // still short of entered_at (start+3) + wait (2s)
+        assert_eq!(c.phase(), Phase::Away);
+
+        c.tick(start + 5.01); // now past start+3+2 - the pending ack applies
+        assert_eq!(c.phase(), Phase::Returning);
+
+        c.tick(start + 8.01);
+        assert_eq!(c.phase(), Phase::Done);
+        assert!((c.x() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ack_that_arrives_after_the_wait_already_elapsed_returns_immediately() {
         let start = 0.0;
         let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         c.tick(start + 3.0);
         assert_eq!(c.phase(), Phase::Away);
 
-        c.received_ack();
+        // The recipient's own animation only needed 1s, and this ack shows up
+        // well after that - nothing left to wait for.
+        c.received_ack(start + 6.0, 1.0);
         assert_eq!(c.phase(), Phase::Returning);
-
-        c.tick(start + 6.0);
-        assert_eq!(c.phase(), Phase::Done);
-        assert!((c.x() - 100.0).abs() < 0.01);
     }
 
     #[test]
@@ -299,7 +375,7 @@ mod tests {
         let start = 0.0;
         let mut c = Courier::outbound(100.0, 100.0, 300.0, Edge::Right, start, 1.0);
         assert_eq!(c.phase(), Phase::Departing);
-        c.received_ack(); // no-op while still departing
+        c.received_ack(start, 2.0); // doesn't change phase while still departing
         assert_eq!(c.phase(), Phase::Departing);
     }
 

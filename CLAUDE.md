@@ -232,7 +232,7 @@ NSIS/`cargo-wix` installer only if you want Start-menu integration.
 ### Auto-update (`src-win/src/update.rs`)
 
 A background thread checks `https://api.github.com/repos/emm312/claudepet/releases/latest` ~15 s
-after launch, then every 6 h. If `tag_name` is newer than `CARGO_PKG_VERSION` **and** the app is
+after launch, then every 20 min. If `tag_name` is newer than `CARGO_PKG_VERSION` **and** the app is
 running from a real install (there's a sibling `uninstall.exe`), it downloads the release's
 `claudepet.exe` asset over WinHTTP, verifies it against the `claudepet.exe.sha256` asset (BCrypt
 SHA-256; refuses on mismatch, proceeds if the asset is absent), and stages it as `claudepet.new.exe`.
@@ -265,7 +265,7 @@ when cutting a release, same as the note above.
 The Swift app gained its own GitHub-Releases updater, `Sources/ClaudePet/Update/Updater.swift` — a
 port of `src-win/src/update.rs` (URLSession + CryptoKit instead of WinHTTP + BCrypt, still zero
 external dependencies) reading the same `emm312/claudepet` releases. `Runtime.scheduleUpdateCheck()`
-mirrors `main.rs`'s update thread exactly: 15s initial delay, 6h recheck, dedupe by staged version,
+mirrors `main.rs`'s update thread exactly: 15s initial delay, 20min recheck, dedupe by staged version,
 gated to real `/Applications` installs (`Updater.isRealInstall`, the Mac analog of "sibling
 `uninstall.exe` present"). On a newer release it downloads `ClaudePet-mac.zip`, verifies it against
 `ClaudePet-mac.zip.sha256` when present (CryptoKit SHA-256; asset names are load-bearing, matched by

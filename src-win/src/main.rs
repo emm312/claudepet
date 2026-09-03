@@ -138,7 +138,7 @@ fn main() {
     }
 }
 
-/// Background: check GitHub Releases ~15s after start, then every 6h. Whenever a
+/// Background: check GitHub Releases ~15s after start, then every 20min. Whenever a
 /// newer release appears, download + verify it and hand the staged path to the
 /// UI thread via `WM_APP_UPDATE_READY`. Keeps checking even after staging one -
 /// with automatic updates *off* the staged build just waits in the menu, and a
@@ -170,7 +170,7 @@ fn spawn_update_checker(hwnd: HWND) {
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+            std::thread::sleep(std::time::Duration::from_secs(20 * 60));
         }
     });
 }

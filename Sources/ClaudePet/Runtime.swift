@@ -757,15 +757,15 @@ final class Runtime {
 
     // MARK: - Auto-update
 
-    /// Checks GitHub Releases for a newer build, then re-checks every 6h -
+    /// Checks GitHub Releases for a newer build, then re-checks every 20min -
     /// mirrors `src-win/src/main.rs`'s update-checker thread (15s initial
-    /// delay, 6h interval, dedupe by staged version).
+    /// delay, 20min interval, dedupe by staged version).
     private func scheduleUpdateCheck() {
         Task.detached(priority: .background) { [weak self] in
             try? await Task.sleep(nanoseconds: 15_000_000_000)
             guard let self else { return }
             await self.performUpdateCheck()
-            try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 20 * 60 * 1_000_000_000)
             await MainActor.run { self.scheduleUpdateCheck() }
         }
     }

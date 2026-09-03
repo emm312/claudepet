@@ -15,6 +15,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var accessibilityItem: NSMenuItem!
     /// Shown only while a delivered letter is waiting - see `menuWillOpen`.
     private var readLetterItem: NSMenuItem!
+    /// Shown only once an update has been downloaded and staged - see `menuWillOpen`.
+    private var installUpdateItem: NSMenuItem!
+    private var autoUpdateItem: NSMenuItem!
 
     init(runtime: Runtime) {
         self.runtime = runtime
@@ -56,6 +59,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let launchAtLoginItem = withAction("Launch at Login", #selector(toggleLaunchAtLogin))
         launchAtLoginItem.state = LoginItemManager.isEnabled ? .on : .off
         menu.addItem(launchAtLoginItem)
+
+        let autoUpdateItem = withAction("Automatic updates", #selector(toggleAutoUpdates))
+        autoUpdateItem.state = (runtime.autoUpdatesEnabled) ? .on : .off
+        menu.addItem(autoUpdateItem)
+        self.autoUpdateItem = autoUpdateItem
+
+        installUpdateItem = withAction("Install update…", #selector(installUpdateNow))
+        installUpdateItem.isHidden = true
+        menu.addItem(installUpdateItem)
         menu.addItem(.separator())
 
         menu.addItem(withAction("Quit ClaudePet", #selector(quit)))
@@ -79,6 +91,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         cleanlinessItem.title = "Cleanliness: \(Int(state.cleanliness))%"
         accessibilityItem.isHidden = AXIsProcessTrusted()
         readLetterItem.isHidden = !(runtime?.hasUnreadLetter ?? false)
+        updateAvailabilityChanged()
+    }
+
+    /// Called whenever a staged update appears (or the menu is about to open)
+    /// so "Install update…" reflects the current pending version.
+    func updateAvailabilityChanged() {
+        guard let installUpdateItem else { return }
+        if let version = runtime?.pendingUpdate?.version {
+            installUpdateItem.title = "Install update \(version) now"
+            installUpdateItem.isHidden = false
+        } else {
+            installUpdateItem.isHidden = true
+        }
     }
 
     /// Called by the Runtime whenever the set of connected peers changes, so
@@ -113,6 +138,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         LoginItemManager.setEnabled(newValue)
         sender.state = newValue ? .on : .off
     }
+
+    @objc private func toggleAutoUpdates(_ sender: NSMenuItem) {
+        guard let runtime else { return }
+        let newValue = !runtime.autoUpdatesEnabled
+        runtime.setAutoUpdatesEnabled(newValue)
+        sender.state = newValue ? .on : .off
+    }
+
+    /// Applies immediately, no delay/bubble - unlike the auto-apply path,
+    /// which waits 8s after announcing itself (see `Runtime.performUpdateCheck`).
+    @objc private func installUpdateNow() { runtime?.applyPendingUpdateNow() }
 
     /// Opens System Settings' Accessibility pane directly, so granting access
     /// doesn't require the user to go hunting for it themselves. This never

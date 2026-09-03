@@ -10,7 +10,7 @@
 param(
     [string]$Version,
     [string]$Repo = "emm312/claudepet",
-    [string]$Branch = "windows"
+    [string]$Branch = "main"
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot   # src-win/

@@ -245,11 +245,52 @@ BCrypt only; TLS is the OS's.
 ### Publishing a release
 
 `src-win/publish.ps1` (needs `gh auth login`): builds app + installer, writes `claudepet.exe.sha256`,
-and `gh release create`/`upload`s all three to `v<Cargo.toml version>` on the `windows` branch. The
+and `gh release create`/`upload`s all three to `v<Cargo.toml version>` on `main` (the branch has
+carried both platforms since `windows` merged, so this no longer targets a `windows` branch). The
 asset names `claudepet.exe` / `claudepet.exe.sha256` are load-bearing — `update::check()` finds them
-by name. Auto-upload alternative: push a `v*` tag and `.github/workflows/release.yml` builds on a
-Windows runner and attaches the same assets. Bump `version` in `src-win/Cargo.toml` before tagging;
-that's what running clients compare against.
+by name. `.github/workflows/release.yml` is the CI alternative — manually triggered (Actions tab, or
+`gh workflow run release.yml -f version=0.2.0`; omitting `version` uses the root `VERSION` file) rather
+than firing on every tag push, so a release only happens when someone actually asks for one. Bump
+`version` in `src-win/Cargo.toml` **and** the root `VERSION` file together before releasing — one tag
+(`v<VERSION>`) carries both platforms' assets, so they must agree.
+
+## macOS updater and shared versioning
+
+A root `VERSION` file (e.g. `0.1.0`) is the single source of truth for the release tag both
+platforms publish under. `Scripts/bundle.sh` reads it into `Info.plist`'s
+`CFBundleShortVersionString` instead of a hardcoded literal. `src-win/Cargo.toml`'s own `version`
+field still drives the Windows build directly (`CARGO_PKG_VERSION`); keep the two in sync by hand
+when cutting a release, same as the note above.
+
+The Swift app gained its own GitHub-Releases updater, `Sources/ClaudePet/Update/Updater.swift` — a
+port of `src-win/src/update.rs` (URLSession + CryptoKit instead of WinHTTP + BCrypt, still zero
+external dependencies) reading the same `emm312/claudepet` releases. `Runtime.scheduleUpdateCheck()`
+mirrors `main.rs`'s update thread exactly: 15s initial delay, 6h recheck, dedupe by staged version,
+gated to real `/Applications` installs (`Updater.isRealInstall`, the Mac analog of "sibling
+`uninstall.exe` present"). On a newer release it downloads `ClaudePet-mac.zip`, verifies it against
+`ClaudePet-mac.zip.sha256` when present (CryptoKit SHA-256; asset names are load-bearing, matched by
+`Updater.swift`'s lookups the same way the Windows names are), unzips via `ditto`, and clears the
+downloaded app's quarantine flag via `xattr` (needed since the app is only ad-hoc/dev signed, not
+notarized). `PetState.autoUpdatesEnabled` (default `true`, decoded with a fallback so older
+`state.json` files without the field don't reset every stat) gates auto-apply exactly like Windows'
+`auto_update`: on, `Runtime.performUpdateCheck()` shows a "shipping vX — relaunching…" bubble and
+calls `applyPendingUpdateNow()` 8s later (same delay as Windows' announce-then-apply); off, the
+update just sits staged until the "Install update vX now" status-item menu item (hidden unless a
+staged update exists, mirroring `readLetterItem`'s visibility pattern) is clicked, which applies
+immediately with no bubble — matching Windows' `ID_UPDATE_NOW` path exactly.
+`Updater.applyAndRelaunch` trashes the running `.app` bundle, moves the staged one into place, and
+relaunches — the macOS equivalent of the Windows exe rename/swap, but without a leftover-`.old.exe`
+cleanup step since `FileManager.trashItem` handles that.
+
+`Scripts/publish.sh` (needs `gh auth login`) is the macOS mirror of `src-win/publish.ps1`: runs
+`Scripts/bundle.sh`, zips the app with `ditto` into `ClaudePet-mac.zip`, writes
+`ClaudePet-mac.zip.sha256`, and publishes both to `v<VERSION>` on `emm312/claudepet` (same tag the
+Windows assets go to). `.github/workflows/release.yml` is `workflow_dispatch`-only (manually run from
+the Actions tab or `gh workflow run release.yml -f version=X.Y.Z`, defaulting to the root `VERSION`
+file) with three jobs: `create-release` (resolves the version, creates the empty release first so the
+two build jobs below can't race each other creating it), `build-windows`, and `build-macos`
+(`macos-latest`, runs the same bundle+zip+checksum steps as `Scripts/publish.sh`) — both build jobs
+upload to the tag `create-release` resolved.
 
 ## Porting rules
 

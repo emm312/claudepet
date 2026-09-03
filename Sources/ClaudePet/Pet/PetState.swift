@@ -16,6 +16,30 @@ struct PetState: Codable {
     var birthDate: Date = Date()
     var lastTick: Date = Date()
 
+    /// Install updates automatically in the background. Not pet state, but it
+    /// rides along in the same state.json rather than a second config file -
+    /// mirrors the Windows port's `PetState.auto_update`. Decoded with a
+    /// fallback below so existing state.json files (saved before this field
+    /// existed) still decode instead of resetting every stat to default.
+    var autoUpdatesEnabled: Bool = true
+
+    private enum CodingKeys: String, CodingKey {
+        case hunger, energy, happiness, cleanliness, birthDate, lastTick, autoUpdatesEnabled
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hunger = try container.decode(Double.self, forKey: .hunger)
+        energy = try container.decode(Double.self, forKey: .energy)
+        happiness = try container.decode(Double.self, forKey: .happiness)
+        cleanliness = try container.decode(Double.self, forKey: .cleanliness)
+        birthDate = try container.decode(Date.self, forKey: .birthDate)
+        lastTick = try container.decode(Date.self, forKey: .lastTick)
+        autoUpdatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdatesEnabled) ?? true
+    }
+
     /// Per-hour decay rates. Tuned so the pet needs light daily attention but
     /// never spirals from a single missed day.
     private static let hungerDecayPerHour = 3.0

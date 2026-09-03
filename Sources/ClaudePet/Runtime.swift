@@ -33,6 +33,11 @@ final class Runtime {
     private var speechBubble: SpeechBubble?
     private var statusItemController: StatusItemController?
 
+    /// A downloaded, verified, ready-to-apply update, if the latest GitHub
+    /// release is newer than this build - see `scheduleUpdateCheck`.
+    private(set) var pendingUpdate: (app: URL, version: String)?
+    private var updateStagedVersion: String?
+
     /// Held for the app's whole lifetime. Without this, macOS App Naps this
     /// LSUIElement process whenever its window is hidden (e.g. mid-delivery,
     /// `orderOut(nil)` above), throttling the tick `Timer` for minutes at a
@@ -146,6 +151,7 @@ final class Runtime {
         registerForSystemNotifications()
         startTimers()
         scheduleDistractionCheck()
+        scheduleUpdateCheck()
         wireTransport()
     }
 
@@ -715,6 +721,56 @@ final class Runtime {
 
     private func refreshLedges() {
         ledges = WindowLedges.currentLedges()
+    }
+
+    // MARK: - Auto-update
+
+    /// Checks GitHub Releases for a newer build, then re-checks every 6h -
+    /// mirrors `src-win/src/main.rs`'s update-checker thread (15s initial
+    /// delay, 6h interval, dedupe by staged version).
+    private func scheduleUpdateCheck() {
+        Task.detached(priority: .background) { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self else { return }
+            await self.performUpdateCheck()
+            try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000)
+            await MainActor.run { self.scheduleUpdateCheck() }
+        }
+    }
+
+    private func performUpdateCheck() async {
+        guard Updater.isRealInstall else { return }
+        guard let info = await Updater.check(), info.version != updateStagedVersion else { return }
+        guard let staged = try? await Updater.downloadAndStage(info) else { return }
+
+        await MainActor.run {
+            self.updateStagedVersion = info.version
+            self.pendingUpdate = (app: staged, version: info.version)
+            self.statusItemController?.updateAvailabilityChanged()
+            if self.state.autoUpdatesEnabled {
+                self.showBubble(force: "shipping \(info.version) - relaunching…")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                    self?.applyPendingUpdateNow()
+                }
+            }
+        }
+    }
+
+    /// Applies a staged update immediately - used both by the auto-apply
+    /// timer and the "Install update now" menu item. Never returns on
+    /// success (the process relaunches and exits).
+    func applyPendingUpdateNow() {
+        guard let pendingUpdate else { return }
+        persistSoon()
+        transport.stop()
+        try? Updater.applyAndRelaunch(staged: pendingUpdate.app)
+    }
+
+    var autoUpdatesEnabled: Bool { state.autoUpdatesEnabled }
+
+    func setAutoUpdatesEnabled(_ enabled: Bool) {
+        state.autoUpdatesEnabled = enabled
+        persistSoon()
     }
 
     // MARK: - Rendering

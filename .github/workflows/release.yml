@@ -1,18 +1,42 @@
 name: release
 
-# Auto-upload: push a tag like v0.2.0 and this builds claudepet.exe +
-# claudepet-setup.exe on a Windows runner and attaches them (plus the
-# sha256 the in-app updater checks) to the GitHub Release for that tag.
+# Manual only - run from the Actions tab, or `gh workflow run release.yml
+# -f version=0.2.0` (omit `version` to use the root VERSION file). Builds
+# claudepet.exe + claudepet-setup.exe on a Windows runner and ClaudePet-mac.zip
+# on a macOS runner, then attaches all of them (plus the sha256 files the
+# in-app updaters check) to the GitHub Release for that version's tag.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0). Defaults to the VERSION file."
+        required: false
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="$(cat VERSION)"; fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+
+  build-windows:
+    needs: create-release
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,11 +56,33 @@ jobs:
           $sha = (Get-FileHash target/release/claudepet.exe -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path target/release/claudepet.exe.sha256 -Value $sha -Encoding ascii -NoNewline
 
-      - name: Publish release
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
           fail_on_unmatched_files: true
           files: |
             src-win/target/release/claudepet.exe
             src-win/target/release/claudepet-setup.exe
             src-win/target/release/claudepet.exe.sha256
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app + zip
+        run: |
+          ./Scripts/bundle.sh
+          ditto -c -k --sequesterRsrc --keepParent ClaudePet.app ClaudePet-mac.zip
+          shasum -a 256 ClaudePet-mac.zip | awk '{print $1}' > ClaudePet-mac.zip.sha256
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            ClaudePet-mac.zip
+            ClaudePet-mac.zip.sha256

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 /// Owns the pet's clock: state, brain, window, and every timer. Everything else
 /// in the app is close to pure and driven from here.
@@ -635,11 +636,18 @@ final class Runtime {
 
     // MARK: - Distraction (Reels rage)
 
+    /// Accessibility trust as of the last poll - `relaunchIfAccessibilityJustGranted`
+    /// compares against this to catch the false→true edge, since granting it
+    /// mid-session (System Settings, or the status-item shortcut) needs a
+    /// relaunch before `DistractionDetector` actually starts working with it.
+    private var wasAccessibilityTrusted = AXIsProcessTrusted()
+
     private func scheduleDistractionCheck() {
         Task.detached(priority: .background) { [weak self] in
             guard let self else { return }
             let sighting = self.distractionDetector.currentSighting()
             await MainActor.run {
+                self.relaunchIfAccessibilityJustGranted()
                 self.applySighting(sighting)
             }
             // Poll a bit faster while distracted so the pet reacts quickly once
@@ -650,6 +658,30 @@ final class Runtime {
             await MainActor.run {
                 self.scheduleDistractionCheck()
             }
+        }
+    }
+
+    private func relaunchIfAccessibilityJustGranted() {
+        let trusted = AXIsProcessTrusted()
+        defer { wasAccessibilityTrusted = trusted }
+        guard trusted, !wasAccessibilityTrusted else { return }
+        showBubble(force: "found my accessibility permission - relaunching…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.relaunch()
+        }
+    }
+
+    /// Quits and relaunches the exact same running app - unlike
+    /// `Updater.applyAndRelaunch`, nothing on disk changes, this just gets a
+    /// fresh process (needed after Accessibility is newly granted, since
+    /// `DistractionDetector` won't pick that up mid-session on its own).
+    private func relaunch() {
+        persistSoon()
+        transport.stop()
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 

@@ -292,6 +292,21 @@ two build jobs below can't race each other creating it), `build-windows`, and `b
 (`macos-latest`, runs the same bundle+zip+checksum steps as `Scripts/publish.sh`) — both build jobs
 upload to the tag `create-release` resolved.
 
+**CI code signing.** `build-macos`'s runner has no Apple Development certificate, so left alone
+`Scripts/bundle.sh` falls back to ad-hoc signing there — per that script's own comment, an ad-hoc
+cdhash changes every build, so every auto-update would look like a brand-new app to TCC and silently
+revoke the Accessibility grant distraction detection needs (surfacing as "gotta remove the old
+permission to give the new app permission" after updating). Fixed by giving CI a *stable* identity of
+its own: a self-signed code-signing certificate (CN "ClaudePet CI Signing", 10-year expiry, not tied
+to any Apple Developer account — signing doesn't need trust-chain validation, only a private key) is
+stored as the `MACOS_CI_CERT_P12`/`MACOS_CI_CERT_PASSWORD` repo secrets (base64 p12 + its passphrase).
+`build-macos`'s "Import signing certificate" step imports it into a throwaway keychain and exports
+`CODESIGN_IDENTITY=ClaudePet CI Signing`, which `bundle.sh` already honors (it prefers the env var
+over its own `security find-identity` lookup) — so every CI build gets the same designated
+requirement, and TCC grants survive updates the same way they do across the user's own local rebuilds
+with their real Apple Development cert. The certificate's private key lives only in those two GitHub
+secrets, nowhere in the repo.
+
 ## Porting rules
 
 - Keep `src-win/src/pet/*` and `net/mod.rs` pure and `#[cfg(test)]`-covered. The four Swift test

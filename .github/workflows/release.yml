@@ -69,8 +69,32 @@ jobs:
   build-macos:
     needs: create-release
     runs-on: macos-latest
+    env:
+      CODESIGN_IDENTITY: "ClaudePet CI Signing"
     steps:
       - uses: actions/checkout@v4
+
+      # A stable, self-signed identity (not ad-hoc) keeps the app's designated
+      # requirement - and so TCC grants like Accessibility - the same across
+      # every CI build, matching what Scripts/bundle.sh does for local
+      # rebuilds with a real Apple Development cert. Without this, an
+      # ad-hoc-signed CI build's cdhash changes every run, and every
+      # auto-update looks like a brand-new app to TCC.
+      - name: Import signing certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CI_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CI_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          KEYCHAIN=build.keychain
+          echo "$CERT_P12_BASE64" | base64 --decode > cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm cert.p12
 
       - name: Build app + zip
         run: |

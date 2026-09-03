@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 
 /// The pet's only real UI surface: a menu bar item with stats, quick actions,
 /// and settings. Everything else on screen is a chromeless overlay.
@@ -12,7 +11,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let happinessItem = NSMenuItem(title: "Happiness: --", action: nil, keyEquivalent: "")
     private let cleanlinessItem = NSMenuItem(title: "Cleanliness: --", action: nil, keyEquivalent: "")
     private var peersMenuItem: NSMenuItem!
-    private var accessibilityItem: NSMenuItem!
     /// Shown only while a delivered letter is waiting - see `menuWillOpen`.
     private var readLetterItem: NSMenuItem!
     /// Shown only once an update has been downloaded and staged - see `menuWillOpen`.
@@ -50,12 +48,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.peersMenuItem = peersMenuItem
         menu.addItem(.separator())
 
-        // Only relevant while distraction detection can't work yet - hidden
-        // once granted, rather than left around as a stale no-op entry.
-        accessibilityItem = withAction("Grant Accessibility Access…", #selector(openAccessibilitySettings))
-        menu.addItem(accessibilityItem)
-        menu.addItem(.separator())
-
         let launchAtLoginItem = withAction("Launch at Login", #selector(toggleLaunchAtLogin))
         launchAtLoginItem.state = LoginItemManager.isEnabled ? .on : .off
         menu.addItem(launchAtLoginItem)
@@ -74,7 +66,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         item.menu = menu
         peersDidChange()
-        accessibilityItem.isHidden = AXIsProcessTrusted()
     }
 
     private func withAction(_ title: String, _ selector: Selector?) -> NSMenuItem {
@@ -89,7 +80,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         energyItem.title = "Energy: \(Int(state.energy))%"
         happinessItem.title = "Happiness: \(Int(state.happiness))%"
         cleanlinessItem.title = "Cleanliness: \(Int(state.cleanliness))%"
-        accessibilityItem.isHidden = AXIsProcessTrusted()
         readLetterItem.isHidden = !(runtime?.hasUnreadLetter ?? false)
         updateAvailabilityChanged()
     }
@@ -149,14 +139,4 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Applies immediately, no delay/bubble - unlike the auto-apply path,
     /// which waits 8s after announcing itself (see `Runtime.performUpdateCheck`).
     @objc private func installUpdateNow() { runtime?.applyPendingUpdateNow() }
-
-    /// Opens System Settings' Accessibility pane directly, so granting access
-    /// doesn't require the user to go hunting for it themselves. This never
-    /// prompts on its own - `DistractionDetector` does that (at most once per
-    /// launch) the first time a browser is frontmost.
-    @objc private func openAccessibilitySettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        else { return }
-        NSWorkspace.shared.open(url)
-    }
 }

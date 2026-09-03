@@ -151,7 +151,11 @@ final class Runtime {
 
         registerForSystemNotifications()
         startTimers()
-        scheduleDistractionCheck()
+        // Reels rampage disabled (soft-removed): it's the only thing that ever
+        // asks for Accessibility access, and that prompt was a bigger cost than
+        // the feature was worth. DistractionDetector/Rampage are left intact -
+        // re-enable by uncommenting this call.
+        // scheduleDistractionCheck()
         scheduleUpdateCheck()
         wireTransport()
     }

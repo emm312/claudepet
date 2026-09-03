@@ -307,6 +307,18 @@ requirement, and TCC grants survive updates the same way they do across the user
 with their real Apple Development cert. The certificate's private key lives only in those two GitHub
 secrets, nowhere in the repo.
 
+## Reels rampage (macOS) — soft-disabled
+
+`Runtime.init()` no longer calls `scheduleDistractionCheck()` (the call is commented out in place,
+not deleted) — it's the only thing that ever asks for Accessibility access, and the OS-level prompt
+plus tray "Grant Accessibility Access…" item (removed from `StatusItem.swift`) were a bigger cost
+than the feature was worth. `DistractionDetector.swift`, `Rampage.swift`, and `Brain`'s distraction
+handling are all left intact and untouched — re-enabling is a one-line uncomment of that call site
+(plus re-adding a menu item if the manual "Grant Accessibility Access…" affordance is wanted back).
+The Windows port's `distraction.rs` (process/title based, no OS permission prompt involved) is
+unaffected by this and still runs as before — this only concerns the macOS Accessibility-based
+detector.
+
 ## Porting rules
 
 - Keep `src-win/src/pet/*` and `net/mod.rs` pure and `#[cfg(test)]`-covered. The four Swift test

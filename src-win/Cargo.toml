@@ -3,7 +3,7 @@ members = ["installer"]
 
 [package]
 name = "claudepet"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "ClaudePet - a desktop pet for Windows (Rust port of the macOS app)"
 license = "MIT"
@@ -19,6 +19,9 @@ rand = "0.8"
 mdns-sd = "0.11"
 socket2 = "0.5"
 flume = "0.11"
+
+[build-dependencies]
+winres = "0.1"
 
 [dependencies.windows]
 version = "0.58"

@@ -41,10 +41,29 @@ switched to hand-authored pixel grids in the same style as the pet's own sprites
   that plays one prop's frames.
 - **Rust**: `pet/sprites.rs` carries the identical grids (`HORSE_FRAMES`/`HORSE_FRAME_DURATION`,
   `MAIL_GRID`), rendered with the existing `Canvas::blit_grid` (the same palette-index renderer the
-  pet's own sprites use) instead of the old RGBA `Canvas::blit_rgba`. `props.rs`, `build.rs`, and the
-  `image` build-dependency are gone entirely - nothing decodes a JPEG anymore. `main.rs::draw_actor`
-  picks a gallop frame from the wall clock (`current_horse_frame()` in `runtime.rs`) since the
-  poll-based render loop has no dedicated animation-frame state to thread through.
+  pet's own sprites use) instead of the old RGBA `Canvas::blit_rgba`. `props.rs` and the `image`
+  build-dependency are gone entirely - nothing decodes a JPEG anymore. (`src-win/build.rs` itself came
+  back later, for an unrelated reason - see "App icon" below - but it doesn't touch images/JPEGs.)
+  `main.rs::draw_actor` picks a gallop frame from the wall clock (`current_horse_frame()` in
+  `runtime.rs`) since the poll-based render loop has no dedicated animation-frame state to thread
+  through.
+
+## App icon
+
+Both platforms' app icon is the pet's own face - `PetSprites`' `idle1` grid (the terracotta body +
+square black eyes from `Palette`), centered on a warm-cream Big-Sur-style rounded-square background -
+generated once by `Resources/icon/make_icon.py` (Pillow) into `Resources/AppIcon/AppIcon.icns` (macOS,
+via `iconutil`) and `Resources/AppIcon/AppIcon.ico` (Windows, multi-size via Pillow). These are
+generated, checked-in binary assets, not built on every build; re-run `make_icon.py` + `iconutil` by
+hand if the pet's face sprite or palette ever changes and the icon should follow.
+
+- **macOS**: `Scripts/bundle.sh` copies `AppIcon.icns` into `Contents/Resources/` and Info.plist
+  carries `CFBundleIconFile = AppIcon`.
+- **Windows**: `src-win/build.rs` (workspace member `claudepet`, `winres` build-dependency) embeds
+  `../Resources/AppIcon/AppIcon.ico` as a Win32 resource when `CARGO_CFG_TARGET_OS = windows` (a no-op
+  on other hosts, so `cargo check` still works on macOS). No installer change was needed -
+  `installer/src/main.rs` already points ARP's `DisplayIcon` at the installed `claudepet.exe`, so the
+  embedded resource icon shows up in Add/Remove Programs for free.
 
 Both platforms lift the pet above its normal ground position while it's on the horse's back
 (`HorseSprite.riderLift` in Swift, the existing `pet_y - 16` in `main::draw_actor` on Rust) so it

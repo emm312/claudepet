@@ -3,9 +3,10 @@
 //! .swift` (the macOS version is a custom letter-themed panel; this is a plain
 //! Win32 dialog, same inputs and outputs).
 //!
-//! Recipient selection is one checkbox per known peer (all checked by default),
-//! mirroring `LetterWindow.swift`'s checkbox row - not a single-selection combo
-//! box, which made sending to more than one peer at once impossible.
+//! Recipient selection is one checkbox per known peer (all unchecked by default,
+//! so the user opts each recipient in), mirroring `LetterWindow.swift`'s checkbox
+//! row - not a single-selection combo box, which made sending to more than one
+//! peer at once impossible.
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -158,9 +159,9 @@ unsafe extern "system" fn compose_proc(
                         hwnd, HMENU((ID_PEER_BASE + i as isize) as *mut _), hinst, None,
                     )
                     .unwrap_or_default();
-                    // Checked by default - sending to everyone nearby is the
-                    // common case; unchecking a peer opts them out.
-                    SendMessageW(cb, BM_SETCHECK, WPARAM(1), LPARAM(0));
+                    // Unchecked by default - the user opts each recipient in
+                    // rather than accidentally broadcasting to everyone nearby.
+                    SendMessageW(cb, BM_SETCHECK, WPARAM(0), LPARAM(0));
                     st.peer_checkboxes.push(cb);
                 }
                 peer_rows_h = 22 * st.peers.len() as i32;

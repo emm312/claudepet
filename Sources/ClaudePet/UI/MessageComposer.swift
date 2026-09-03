@@ -8,7 +8,7 @@ enum MessageComposer {
     /// Returns `nil` if the user cancelled. If there's exactly one nearby
     /// peer it's targeted automatically and no picker is shown; with more
     /// than one, a checklist lets the user address the letter to several at
-    /// once (all checked by default).
+    /// once (all unchecked by default - the user opts each recipient in).
     static func present(peerNames: [String]) -> (text: String, peers: [String], express: Bool)? {
         guard !peerNames.isEmpty else {
             let alert = NSAlert()

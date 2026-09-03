@@ -28,6 +28,9 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 echo "==> Combining into universal binary"
 lipo -create -output "$MACOS_DIR/$APP_NAME" "$ARM_BIN" "$X86_BIN"
 
+echo "==> Copying app icon"
+cp "$ROOT_DIR/Resources/AppIcon/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,6 +42,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>$BUNDLE_ID</string>
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

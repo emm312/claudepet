@@ -163,14 +163,15 @@ final class LetterWindow: NSWindow {
             peerLabel.frame = CGRect(x: 60, y: toY, width: size.width - 82, height: 20)
             card.addSubview(peerLabel)
         } else {
-            // A checkbox per nearby peer, all checked by default, so one
-            // letter can go out to several pets at once.
+            // A checkbox per nearby peer, all unchecked by default, so the
+            // user explicitly picks who a letter goes out to rather than
+            // accidentally broadcasting to everyone nearby.
             let font = NSFont(name: "Georgia-Italic", size: 13) ?? .systemFont(ofSize: 13)
             var y = toY
             for name in peerNames {
                 let checkbox = NSButton(checkboxWithTitle: name, target: nil, action: nil)
                 checkbox.attributedTitle = NSAttributedString(string: name, attributes: [.font: font, .foregroundColor: LetterTheme.ink])
-                checkbox.state = .on
+                checkbox.state = .off
                 checkbox.frame = CGRect(x: 46, y: y - 2, width: size.width - 68, height: Self.peerRowHeight)
                 card.addSubview(checkbox)
                 peerCheckboxes.append(checkbox)

@@ -84,13 +84,36 @@ enum Skins {
         return g
     }
 
+    /// Like `stamp`, but only recolors a cell that's already part of the
+    /// body (non-transparent) in this exact frame, rather than unconditionally
+    /// painting it - so a patch that targets a limb which is lifted/hidden in
+    /// a given pose (e.g. `walk1`/`walk2` alternate which foot is drawn at
+    /// all) tracks that pose instead of drawing over a gap that's supposed to
+    /// be empty. Used for beak/feet-style overlays that are meant to recolor
+    /// part of the existing rig, as opposed to `stamp`'s toppers (hats, wigs,
+    /// leaves) that add pixels outside the rig's own silhouette.
+    private static func stampOverBody(_ grid: [[UInt8]], _ patch: [(row: Int, col: Int, value: UInt8)]) -> [[UInt8]] {
+        var g = grid
+        for p in patch where p.row >= 0 && p.row < g.count && p.col >= 0 && p.col < g[p.row].count && g[p.row][p.col] != 0 {
+            g[p.row][p.col] = p.value
+        }
+        return g
+    }
+
     /// Recolors every frame of the classic rig via `remapTable` (classic
     /// indices 1/2/3 -> this skin's own indices), then stamps the same
-    /// `topper` patch onto every resulting frame.
-    private static func transform(remapTable: [UInt8: UInt8], topper: [(row: Int, col: Int, value: UInt8)]) -> [PetMood.AnimState: SpriteClip] {
+    /// `topper` patch onto every resulting frame. `overlay` (if given) is
+    /// applied afterward via `stampOverBody`, so it recolors existing body
+    /// pixels only - tracking whichever pose is currently drawn - rather than
+    /// unconditionally painting over gaps `topper` would leave alone.
+    private static func transform(
+        remapTable: [UInt8: UInt8],
+        topper: [(row: Int, col: Int, value: UInt8)],
+        overlay: [(row: Int, col: Int, value: UInt8)] = []
+    ) -> [PetMood.AnimState: SpriteClip] {
         var out: [PetMood.AnimState: SpriteClip] = [:]
         for (state, clip) in PetSprites.clips {
-            let frames = clip.frames.map { stamp(remap($0, remapTable), topper) }
+            let frames = clip.frames.map { stampOverBody(stamp(remap($0, remapTable), topper), overlay) }
             out[state] = SpriteClip(frames: frames, frameDuration: clip.frameDuration, loops: clip.loops)
         }
         return out
@@ -106,7 +129,8 @@ enum Skins {
         headBoundaryRow: Int,
         headMap: [UInt8: UInt8],
         bodyMap: [UInt8: UInt8],
-        topper: [(row: Int, col: Int, value: UInt8)]
+        topper: [(row: Int, col: Int, value: UInt8)],
+        overlay: [(row: Int, col: Int, value: UInt8)] = []
     ) -> [PetMood.AnimState: SpriteClip] {
         var out: [PetMood.AnimState: SpriteClip] = [:]
         for (state, clip) in PetSprites.clips {
@@ -118,7 +142,7 @@ enum Skins {
                         return map[value] ?? value
                     }
                 }
-                return stamp(recolored, topper)
+                return stampOverBody(stamp(recolored, topper), overlay)
             }
             out[state] = SpriteClip(frames: frames, frameDuration: clip.frameDuration, loops: clip.loops)
         }
@@ -224,8 +248,13 @@ enum Skins {
         return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: topper))
     }
 
-    /// A goofy white duck: a stubby orange beak stamped below the eyes and a
-    /// pair of big orange webbed feet, on an otherwise all-white body.
+    /// A goofy white duck: a stubby orange beak recolored below the eyes and
+    /// a pair of big orange webbed feet, on an otherwise all-white body. The
+    /// beak/feet are an `overlay` (recolors existing body pixels only) rather
+    /// than a `topper` (unconditional paint), so a pose that hides a foot -
+    /// `walk1`/`walk2` alternate which one is drawn at all - hides the
+    /// matching orange foot too, instead of always showing both and masking
+    /// the walk cycle.
     private static func buildSillyDuck() -> SkinDef {
         let palette: [UInt8: NSColor] = [
             1: NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.945, alpha: 1), // white feathers
@@ -233,15 +262,15 @@ enum Skins {
             3: NSColor(calibratedRed: 0.9, green: 0.55, blue: 0.4, alpha: 1),      // flushed feathers (angry)
             4: NSColor(calibratedRed: 0.949, green: 0.6, blue: 0.157, alpha: 1),   // beak + feet
         ]
-        var topper: [(row: Int, col: Int, value: UInt8)] = []
+        var overlay: [(row: Int, col: Int, value: UInt8)] = []
         // Stubby beak below the eyes, tapering to a point.
-        for c in 6...9 { topper.append((11, c, 4)) }
-        topper.append((12, 7, 4))
-        topper.append((12, 8, 4))
+        for c in 6...9 { overlay.append((11, c, 4)) }
+        overlay.append((12, 7, 4))
+        overlay.append((12, 8, 4))
         // Big webbed orange feet.
-        for c in 3...6 { topper.append((15, c, 4)) }
-        for c in 9...12 { topper.append((15, c, 4)) }
-        return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: topper))
+        for c in 3...6 { overlay.append((15, c, 4)) }
+        for c in 9...12 { overlay.append((15, c, 4)) }
+        return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: [], overlay: overlay))
     }
 
     /// A Canada-goose-styled look: a black head/neck with a white cheek
@@ -260,25 +289,27 @@ enum Skins {
             7: NSColor(calibratedRed: 0.831, green: 0.482, blue: 0.106, alpha: 1), // beak + feet
         ]
         var topper: [(row: Int, col: Int, value: UInt8)] = []
-        // White cheek patches flanking the head, plus a chin band, forming a
-        // chinstrap around the black head without covering either eye.
+        // White cheek patches flanking the head, forming a chinstrap around
+        // the black head without covering either eye.
         topper.append((9, 3, 6)); topper.append((9, 12, 6))
         topper.append((10, 3, 6)); topper.append((10, 12, 6))
-        for c in 6...9 { topper.append((11, c, 6)) }
-        // Beak, stamped over the chin band.
-        for c in 6...9 { topper.append((11, c, 7)) }
-        topper.append((12, 7, 7))
-        topper.append((12, 8, 7))
-        // Big webbed feet.
-        for c in 3...6 { topper.append((15, c, 7)) }
-        for c in 9...12 { topper.append((15, c, 7)) }
+        // Beak and feet are an `overlay` (recolors existing body pixels only,
+        // see `buildSillyDuck`) so `walk1`/`walk2` hiding a foot still hides
+        // the matching orange foot instead of masking the walk cycle.
+        var overlay: [(row: Int, col: Int, value: UInt8)] = []
+        for c in 6...9 { overlay.append((11, c, 7)) }
+        overlay.append((12, 7, 7))
+        overlay.append((12, 8, 7))
+        for c in 3...6 { overlay.append((15, c, 7)) }
+        for c in 9...12 { overlay.append((15, c, 7)) }
         return SkinDef(
             palette: palette,
             clips: transformRowSplit(
                 headBoundaryRow: 11,
                 headMap: [1: 1, 2: 2, 3: 3],
                 bodyMap: [1: 4, 2: 2, 3: 5],
-                topper: topper
+                topper: topper,
+                overlay: overlay
             )
         )
     }

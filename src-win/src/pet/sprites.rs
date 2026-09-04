@@ -415,17 +415,39 @@ fn stamp(grid: Vec<Vec<u8>>, patch: &[(usize, usize, u8)]) -> Vec<Vec<u8>> {
     g
 }
 
+/// Like `stamp`, but only recolors a cell that's already part of the body
+/// (non-transparent) in this exact frame, rather than unconditionally
+/// painting it - so a patch that targets a limb which is lifted/hidden in a
+/// given pose (e.g. `WALK1`/`WALK2` alternate which foot is drawn at all)
+/// tracks that pose instead of drawing over a gap that's supposed to be
+/// empty. Mirrors `stampOverBody` in `Sources/ClaudePet/Pet/Skins.swift`.
+fn stamp_over_body(grid: Vec<Vec<u8>>, patch: &[(usize, usize, u8)]) -> Vec<Vec<u8>> {
+    let mut g = grid;
+    for &(r, c, v) in patch {
+        if r < g.len() && c < g[r].len() && g[r][c] != 0 {
+            g[r][c] = v;
+        }
+    }
+    g
+}
+
 /// Recolors every frame of the classic rig via `remap_table` (classic indices
 /// 1/2/3 -> this skin's own indices), then stamps the same `topper` patch onto
-/// every resulting frame.
-fn transform_clips(remap_table: &HashMap<u8, u8>, topper: &[(usize, usize, u8)]) -> HashMap<AnimState, SpriteClip> {
+/// every resulting frame. `overlay` (if non-empty) is applied afterward via
+/// `stamp_over_body`, so it recolors existing body pixels only rather than
+/// unconditionally painting over gaps `topper` would leave alone.
+fn transform_clips(
+    remap_table: &HashMap<u8, u8>,
+    topper: &[(usize, usize, u8)],
+    overlay: &[(usize, usize, u8)],
+) -> HashMap<AnimState, SpriteClip> {
     CLIPS
         .iter()
         .map(|(state, clip)| {
             let frames = clip
                 .frames
                 .iter()
-                .map(|frame| stamp(remap(frame, remap_table), topper))
+                .map(|frame| stamp_over_body(stamp(remap(frame, remap_table), topper), overlay))
                 .collect();
             (
                 *state,
@@ -451,6 +473,7 @@ fn transform_clips_row_split(
     head_map: &HashMap<u8, u8>,
     body_map: &HashMap<u8, u8>,
     topper: &[(usize, usize, u8)],
+    overlay: &[(usize, usize, u8)],
 ) -> HashMap<AnimState, SpriteClip> {
     CLIPS
         .iter()
@@ -467,7 +490,7 @@ fn transform_clips_row_split(
                             row.iter().map(|v| if *v == 0 { 0 } else { *map.get(v).unwrap_or(v) }).collect()
                         })
                         .collect();
-                    stamp(recolored, topper)
+                    stamp_over_body(stamp(recolored, topper), overlay)
                 })
                 .collect();
             (
@@ -517,7 +540,7 @@ fn build_principal() -> SkinDef {
     topper.push((13, 7, 5u8));
     let head_map: HashMap<u8, u8> = [(1u8, 1u8), (2, 2), (3, 3)].into_iter().collect();
     let body_map: HashMap<u8, u8> = [(1u8, 4u8), (2, 2), (3, 4)].into_iter().collect();
-    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper) }
+    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper, &[]) }
 }
 
 /// Bright jumpsuit, a big round red nose, a rainbow fringe of hair flush
@@ -557,7 +580,7 @@ fn build_clown() -> SkinDef {
     for (i, c) in (4..=11).enumerate() {
         topper.push((13, c, ruff[i]));
     }
-    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper, &[]) }
 }
 
 /// A terracotta pot with two green leaves sprouting from the top of the head,
@@ -591,12 +614,16 @@ fn build_plant() -> SkinDef {
     for c in 9..=11 {
         topper.push((5, c, 4u8));
     }
-    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper, &[]) }
 }
 
-/// A goofy white duck: a stubby orange beak stamped below the eyes and a
-/// pair of big orange webbed feet, on an otherwise all-white body. Mirrors
-/// `buildSillyDuck` in `Sources/ClaudePet/Pet/Skins.swift`.
+/// A goofy white duck: a stubby orange beak recolored below the eyes and a
+/// pair of big orange webbed feet, on an otherwise all-white body. The
+/// beak/feet are an `overlay` (recolors existing body pixels only, see
+/// `stamp_over_body`) rather than a `topper`, so a pose that hides a foot -
+/// `WALK1`/`WALK2` alternate which one is drawn at all - hides the matching
+/// orange foot too, instead of always showing both and masking the walk
+/// cycle. Mirrors `buildSillyDuck` in `Sources/ClaudePet/Pet/Skins.swift`.
 fn build_silly_duck() -> SkinDef {
     let palette = vec![
         [0, 0, 0, 0],
@@ -605,21 +632,21 @@ fn build_silly_duck() -> SkinDef {
         [229, 140, 102, 255], // 3 flushed feathers (angry)
         [242, 153, 40, 255],  // 4 beak + feet
     ];
-    let mut topper = Vec::new();
+    let mut overlay = Vec::new();
     // Stubby beak below the eyes, tapering to a point.
     for c in 6..=9 {
-        topper.push((11, c, 4u8));
+        overlay.push((11, c, 4u8));
     }
-    topper.push((12, 7, 4u8));
-    topper.push((12, 8, 4u8));
+    overlay.push((12, 7, 4u8));
+    overlay.push((12, 8, 4u8));
     // Big webbed orange feet.
     for c in 3..=6 {
-        topper.push((15, c, 4u8));
+        overlay.push((15, c, 4u8));
     }
     for c in 9..=12 {
-        topper.push((15, c, 4u8));
+        overlay.push((15, c, 4u8));
     }
-    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &[], &overlay) }
 }
 
 /// A Canada-goose-styled look: a black head/neck with a white cheek
@@ -639,31 +666,30 @@ fn build_goose() -> SkinDef {
         [212, 123, 27, 255],  // 7 beak + feet
     ];
     let mut topper = Vec::new();
-    // White cheek patches flanking the head, plus a chin band, forming a
-    // chinstrap around the black head without covering either eye.
+    // White cheek patches flanking the head, forming a chinstrap around the
+    // black head without covering either eye.
     topper.push((9, 3, 6u8));
     topper.push((9, 12, 6u8));
     topper.push((10, 3, 6u8));
     topper.push((10, 12, 6u8));
+    // Beak and feet are an `overlay` (recolors existing body pixels only,
+    // see `build_silly_duck`) so `WALK1`/`WALK2` hiding a foot still hides
+    // the matching orange foot instead of masking the walk cycle.
+    let mut overlay = Vec::new();
     for c in 6..=9 {
-        topper.push((11, c, 6u8));
+        overlay.push((11, c, 7u8));
     }
-    // Beak, stamped over the chin band.
-    for c in 6..=9 {
-        topper.push((11, c, 7u8));
-    }
-    topper.push((12, 7, 7u8));
-    topper.push((12, 8, 7u8));
-    // Big webbed feet.
+    overlay.push((12, 7, 7u8));
+    overlay.push((12, 8, 7u8));
     for c in 3..=6 {
-        topper.push((15, c, 7u8));
+        overlay.push((15, c, 7u8));
     }
     for c in 9..=12 {
-        topper.push((15, c, 7u8));
+        overlay.push((15, c, 7u8));
     }
     let head_map: HashMap<u8, u8> = [(1u8, 1u8), (2, 2), (3, 3)].into_iter().collect();
     let body_map: HashMap<u8, u8> = [(1u8, 4u8), (2, 2), (3, 5)].into_iter().collect();
-    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper) }
+    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper, &overlay) }
 }
 
 pub static ACCESSORIES: LazyLock<HashMap<AccessoryId, AccessoryDef>> = LazyLock::new(|| {

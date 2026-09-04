@@ -6,6 +6,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod adventure;
 mod autostart;
 mod compose;
 mod customize;
@@ -408,9 +409,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let app = &mut *app_ptr;
                 app.runtime.peer_names_owned()
             };
-            if let Some((text, recipients, express)) = compose::present(hwnd, &peers) {
-                let app = &mut *app_ptr;
-                app.runtime.send_message(&text, &recipients, express);
+            if let Some((text, recipients, express, adventure)) = compose::present(hwnd, &peers) {
+                {
+                    let app = &mut *app_ptr;
+                    app.runtime.send_message(&text, &recipients, express);
+                }
+                if adventure {
+                    // Same defer-then-reborrow discipline as WM_APP_CUSTOMIZE:
+                    // adventure::present pumps its own message loop (which
+                    // re-enters this wndproc via WM_TIMER), so nothing may hold
+                    // `&mut App` across the call. `modal_open` keeps a tray
+                    // "Read Letter…" from stacking another modal on top.
+                    let (skin, accessories) = {
+                        let app = &mut *app_ptr;
+                        (app.runtime.skin(), app.runtime.accessories().clone())
+                    };
+                    (*app_ptr).modal_open = true;
+                    adventure::present(hwnd, skin, &accessories, express);
+                    (*app_ptr).modal_open = false;
+                }
             }
             LRESULT(0)
         }

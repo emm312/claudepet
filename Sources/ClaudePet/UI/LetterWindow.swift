@@ -72,7 +72,10 @@ final class LetterWindow: NSWindow {
     private var peerCheckboxes: [NSButton] = []
     private let singlePeer: String?
     private var expressCheckbox: NSButton!
-    private var result: (text: String, peers: [String], express: Bool)?
+    /// Compose mode only: "Watch the journey" - play the `AdventureWindow`
+    /// cutscene after the send. Never shown when reading/replying.
+    private var adventureCheckbox: NSButton!
+    private var result: (text: String, peers: [String], express: Bool, adventure: Bool)?
 
     /// Only meaningful in `.read` mode: whether the reader has switched the
     /// panel over to composing a reply.
@@ -94,7 +97,11 @@ final class LetterWindow: NSWindow {
         mode = .compose
         singlePeer = peerNames.count == 1 ? peerNames[0] : nil
         let extraRows = max(0, peerNames.count - 1)
-        windowSize = CGSize(width: Self.baseSize.width, height: Self.baseSize.height + CGFloat(extraRows) * Self.peerRowHeight)
+        // + one row for the "Watch the journey" checkbox (compose mode only).
+        windowSize = CGSize(
+            width: Self.baseSize.width,
+            height: Self.baseSize.height + 26 + CGFloat(extraRows) * Self.peerRowHeight
+        )
         super.init(
             contentRect: CGRect(origin: .zero, size: windowSize),
             styleMask: [.borderless],
@@ -192,6 +199,19 @@ final class LetterWindow: NSWindow {
         card.addSubview(express)
         expressCheckbox = express
         toY -= 26
+
+        // Compose only: offer the send-off cutscene (see AdventureWindow).
+        if case .compose = mode {
+            let adventure = NSButton(checkboxWithTitle: "Watch the journey \u{1F3F0}", target: nil, action: nil)
+            adventure.attributedTitle = NSAttributedString(
+                string: "Watch the journey \u{1F3F0}",
+                attributes: [.font: expressFont, .foregroundColor: LetterTheme.inkFaint]
+            )
+            adventure.frame = CGRect(x: 20, y: toY - 24, width: size.width - 40, height: Self.peerRowHeight)
+            card.addSubview(adventure)
+            adventureCheckbox = adventure
+            toY -= 26
+        }
 
         let scroll = NSScrollView(frame: CGRect(x: 20, y: 56, width: size.width - 40, height: toY - 66))
         scroll.hasVerticalScroller = true
@@ -312,7 +332,7 @@ final class LetterWindow: NSWindow {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let peers = singlePeer.map { [$0] } ?? peerCheckboxes.filter { $0.state == .on }.map(\.title)
         if !text.isEmpty, !peers.isEmpty {
-            result = (text, peers, expressCheckbox.state == .on)
+            result = (text, peers, expressCheckbox.state == .on, adventureCheckbox?.state == .on)
             NSApp.stopModal()
         }
     }
@@ -325,7 +345,7 @@ final class LetterWindow: NSWindow {
     /// mirroring `NSAlert.runModal`'s call shape. `nil` means "closed without
     /// sending" - either a cancelled compose, or a read letter dismissed with
     /// "OK" and no reply.
-    func runModal() -> (text: String, peers: [String], express: Bool)? {
+    func runModal() -> (text: String, peers: [String], express: Bool, adventure: Bool)? {
         NSApp.activate(ignoringOtherApps: true)
         center()
         makeKeyAndOrderFront(nil)

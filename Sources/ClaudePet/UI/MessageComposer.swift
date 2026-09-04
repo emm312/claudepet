@@ -9,7 +9,7 @@ enum MessageComposer {
     /// peer it's targeted automatically and no picker is shown; with more
     /// than one, a checklist lets the user address the letter to several at
     /// once (all unchecked by default - the user opts each recipient in).
-    static func present(peerNames: [String]) -> (text: String, peers: [String], express: Bool)? {
+    static func present(peerNames: [String]) -> (text: String, peers: [String], express: Bool, adventure: Bool)? {
         guard !peerNames.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "No pets nearby"

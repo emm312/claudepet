@@ -17,8 +17,11 @@ rendering (see below); and `Runtime.swift` + `Overlay/OverlayView.swift` + `Pet/
 the click-to-open received-letter UX that matches the Windows port (see "Receiving a letter" under
 Networking — no auto-opening reader, mail in the pet's hand, `handoffDuration` 0.5s, a "Read Letter…"
 item on the pet's right-click menu and the status item). `Tests/ClaudePetTests/CourierTests.swift`
-tracks the shorter handoff. Nothing else under `Tests/`, `Package.swift`, or `Scripts/` is touched,
-and none of it is ever pushed to `main`.
+tracks the shorter handoff. The carve-out also carries the **adventure cutscene** (see its own
+section below): `UI/AdventureWindow.swift` (new), plus `UI/LetterWindow.swift` + `UI/MessageComposer.swift`
++ `Runtime.swift` for the "Watch the journey" checkbox that triggers it. `Package.swift` is still
+untouched; `Scripts/bundle.sh` gains exactly one `cp` line (the backdrop blob into `Contents/Resources/`,
+right beside the existing `AppIcon.icns` copy). None of it is ever pushed to `main`.
 
 This carve-out was cut from `main` before three commits landed there (`dc69ae9` incoming-message
 letter window, `ba30cfd` multi-recipient sends, `171fe15` the flaky-discovery fix); all three have
@@ -47,6 +50,56 @@ switched to hand-authored pixel grids in the same style as the pet's own sprites
   `main.rs::draw_actor` picks a gallop frame from the wall clock (`current_horse_frame()` in
   `runtime.rs`) since the poll-based render loop has no dedicated animation-frame state to thread
   through.
+
+## Adventure cutscene ("Watch the journey")
+
+The compose window's third checkbox (below "express") — `ID_ADVENTURE` in `compose.rs`,
+`adventureCheckbox` in `LetterWindow.swift`. When it's ticked, the message sends as normal **and
+then** a small self-closing window plays a cutscene: the pet walks a stone bridge up to a castle,
+holds ~1.6s at the gate, and the window closes itself. If the send was also express, the pet
+gallops in on the horse (`HORSE_FRAMES`, same 2-frame cycle as the courier) and arrives in half the
+time. Nothing about this touches the wire — `PetMessage` is unchanged and the `net::tests::wire_contract_*`
+byte-string test is unaffected; the checkbox result is a 4th `bool` on the compose tuple
+(`compose::present` → `(text, peers, express, adventure)`; `LetterWindow.runModal()` likewise) that
+the caller acts on locally after `send_message`.
+
+**Backdrop — one baked pixel blob, still no JPEG decode.** `Resources/adventure/castle_bridge.jpg`
+(512×512 pixel-art source, checked in) is downscaled once to a raw **192×192 BGRA** blob,
+`Resources/adventure/castle_bridge.bgra` (147,456 bytes, top-down, alpha forced opaque, byte order
+matching `render::Canvas` / the pet sprites). That blob is the checked-in asset both platforms use;
+nothing decodes a JPEG at build or run time and the `image` crate stays gone. Regenerate with
+`Resources/adventure/make_bg.py` (Pillow) — a run-by-hand step like `Resources/icon/make_icon.py`.
+On a Windows box without Python, the equivalent one-liner is System.Drawing:
+`Add-Type -AssemblyName System.Drawing` → `Bitmap` resize with `InterpolationMode.NearestNeighbor` →
+`LockBits(Format32bppArgb)` → `Marshal.Copy` → force every 4th byte to 255 → `File.WriteAllBytes`.
+
+- **Rust** (`src-win/src/adventure.rs`, new; `mod adventure` in `main.rs`): `include_bytes!` the
+  blob; a plain `WS_POPUP | WS_CAPTION | WS_SYSMENU` + `WS_EX_TOPMOST` window sized via
+  `AdjustWindowRectEx` to an exact 2× client (384×384). Its own nested message pump like
+  `letter.rs`/`customize.rs`, but driven by a 33 ms `WM_TIMER` rather than user input — each tick
+  invalidates, `WM_PAINT` copies the blob into a scratch buffer, blits horse (if express) + pet
+  frame + accessories over it, then `StretchDIBits` (`COLORONCOLOR`) up to
+  the window. `WM_ERASEBKGND` returns 1 (painted edge-to-edge). The pet follows `PATH`, a 9-knot
+  normalised polyline eyeballed onto the cobbled path + rampart, by arc length; `arrived_at` +
+  `HOLD_SECONDS` trip `done` — and, crucially, `arrived_at`/`done` are advanced from `WM_TIMER`
+  (`advance()`), **never** from `WM_PAINT`, which Windows may coalesce away while the window is
+  occluded (a paint-driven close would hang with the owner still disabled). Fake perspective: the
+  pet + horse scale from `NEAR_SCALE` (1.0) at the near end to `FAR_SCALE` (0.45) at the castle, via
+  a local `blit_grid_scaled` (nearest-neighbour into an arbitrary dest rect — `Canvas::blit_grid`
+  only does integer zoom). `WM_APP_COMPOSE` in `main.rs` calls `adventure::present` after `send_message` with the
+  same defer-then-reborrow discipline as `WM_APP_CUSTOMIZE` (the nested pump re-enters `wndproc`
+  via `WM_TIMER`, so nothing may hold `&mut App` across the call) and sets `App::modal_open` around
+  it so a tray "Read Letter…" can't stack another modal.
+- **macOS** (`Sources/ClaudePet/UI/AdventureWindow.swift`, new — carve-out): same 192-space polyline,
+  perspective scale, and constants, reusing `PixelArtRenderer.renderComposite` / `Skins` /
+  `HorseSprite` (the scale is just a smaller dest rect passed to `ctx.draw`, no custom blit needed).
+  Loads the
+  blob from `Bundle.main` (bundled by `bundle.sh`) with a **`#if DEBUG`-only** `#filePath`
+  source-tree fallback so `swift run` works — a release build with a missing/renamed asset falls
+  through to the sky-blue fill rather than baking the build machine's path in. **Deliberate divergence: non-modal.** The Rust port runs a nested message pump;
+  a nested `NSApp.runModal` here would starve a `.default`-mode `Timer` and hang forever, so the
+  window just orders front, animates on a `.common`-mode timer, and `close()`s itself — `Runtime`
+  holds the one reference (`adventureWindow`) and drops it via `onClose`.
 
 ## App icon
 
@@ -83,8 +136,11 @@ express; the express speed multiplier is 3x on both platforms (`Courier.expressS
 `src-win/src/runtime.rs`'s `EXPRESS_SPEED_MULT` — keep these in sync if either changes).
 
 **Not yet compiled**: the click-to-open received-letter changes to `Overlay/OverlayView.swift` and
-`UI/StatusItem.swift` were written on the Windows dev box, which has no Swift toolchain — they have
-not been through `swift build` or `swift test` on a Mac. `Runtime.swift`, `Pet/Courier.swift`, and
+`UI/StatusItem.swift`, and the whole adventure-cutscene carve-out (`UI/AdventureWindow.swift`,
+`UI/LetterWindow.swift`, `UI/MessageComposer.swift`, `Runtime.swift`, `Scripts/bundle.sh`), were
+written on the Windows dev box, which has no Swift toolchain — they have not been through
+`swift build` or `swift test` on a Mac. The Rust adventure code (`src-win/src/adventure.rs`,
+`compose.rs`, `main.rs`) *is* `cargo build`/`cargo test` clean on Windows (57 tests). `Runtime.swift`, `Pet/Courier.swift`, and
 `Tests/ClaudePetTests/CourierTests.swift`, along with the later ack-timing rework (`Net/PetMessage.swift`,
 `Net/LanUdpLink.swift`, `Tests/ClaudePetTests/LanUdpLinkTests.swift`) *have* since been through
 `swift build`/`swift build --build-tests` on a Mac with a real toolchain and compile clean, but the
@@ -116,8 +172,10 @@ that touches the screen, the tray, autostart, or the network is native Windows c
 ```
 CLAUDE.md                     ← this file
 .github/workflows/release.yml ← tag `v*` → build + upload release assets (auto-update source)
-Package.swift, Sources/       ← upstream macOS app (only the messaging-interop carve-out is touched)
-Tests/, Scripts/, Resources/sprites/   ← upstream macOS app, untouched
+Package.swift, Sources/       ← upstream macOS app (messaging-interop + adventure-cutscene carve-outs)
+Tests/, Resources/sprites/    ← upstream macOS app, untouched
+Scripts/                      ← upstream, bar one `cp` line in bundle.sh for the adventure backdrop
+Resources/adventure/          ← castle_bridge.jpg (source), castle_bridge.bgra (baked blob), make_bg.py
 src-win/                      ← the Windows port (Rust)
   Cargo.toml
   publish.ps1                 build + `gh release` a new version for the in-app updater
@@ -132,8 +190,11 @@ src-win/                      ← the Windows port (Rust)
     tray.rs                   Shell_NotifyIcon tray + menu (stats, actions, peers, autostart, quit)
                               — mirrors UI/StatusItem.swift
     autostart.rs              HKCU\...\Run registry value — mirrors UI/LoginItemManager.swift
-    compose.rs                minimal native compose window (EDIT + peer COMBOBOX + Send/Cancel)
-                              — mirrors UI/MessageComposer.swift + UI/LetterWindow.swift
+    compose.rs                minimal native compose window (EDIT + peer checkboxes + express +
+                              "watch the journey" + Send/Cancel) — mirrors UI/MessageComposer.swift
+                              + UI/LetterWindow.swift
+    adventure.rs              "Watch the journey" cutscene: baked backdrop blob + pet walking the
+                              bridge to the castle — mirrors UI/AdventureWindow.swift
     geometry.rs               monitor enumeration + work area (excl. taskbar), clamp-on-screen
                               — mirrors Overlay/ScreenGeometry.swift
     ledges.rs                 EnumWindows + GetWindowRect + DWMWA_CLOAKED filter → walkable ledges
@@ -226,7 +287,7 @@ tray / right-click menu (shown only when one's waiting) is the same path.
 From `src-win/`:
 
 ```
-cargo test                       # pure-logic + runtime unit tests (39)
+cargo test                       # pure-logic + runtime unit tests (57)
 cargo run                        # debug run of the pet
 cargo build --release            # → target/release/claudepet.exe  (single file, no runtime deps)
 CLAUDEPET_PEER_NAME=DeskA cargo run   # second instance for local messaging tests
@@ -254,8 +315,9 @@ no Visual Studio *IDE* — but the MSVC target still needs a linker (`link.exe`)
 with the "Desktop development with C++" workload) or switch to the GNU toolchain
 (`rustup default stable-x86_64-pc-windows-gnu`), which links with bundled MinGW and needs no SDK.
 
-The shippable artifact is the bare `claudepet.exe` (~560 KB release, no runtime DLLs); wrap it in an
-NSIS/`cargo-wix` installer only if you want Start-menu integration.
+The shippable artifact is the bare `claudepet.exe` (~760 KB release, no runtime DLLs; ~144 KB of
+that is the `include_bytes!`-embedded adventure backdrop blob); wrap it in an NSIS/`cargo-wix`
+installer only if you want Start-menu integration.
 
 ### Auto-update (`src-win/src/update.rs`)
 
@@ -366,3 +428,7 @@ detector.
 - If a macOS capability has no clean Windows equivalent, degrade explicitly and note it here rather
   than faking it (currently: distraction detection is title/process based only; receiving a letter
   shows mail-in-hand + click-to-open instead of auto-opening the reader).
+- Where the two platforms' UI toolkits force a structural difference, pick each side's natural idiom
+  and note the divergence. The adventure cutscene is modal (nested `GetMessageW` pump) on Windows
+  but non-modal (self-closing `.common`-mode `Timer` window) on macOS — a nested `NSApp.runModal`
+  would starve the timer. Same polyline, constants, and 192-unit scene space on both.

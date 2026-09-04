@@ -43,17 +43,19 @@ struct ComposeState {
     peer_checkboxes: Vec<HWND>,
     edit: HWND,
     express_cb: HWND,
+    adventure_cb: HWND,
     send_btn: HWND,
     cancel_btn: HWND,
     paper_brush: HBRUSH,
     body_font: HFONT,
-    result: Option<(String, Vec<String>, bool)>,
+    result: Option<(String, Vec<String>, bool, bool)>,
     done: bool,
 }
 
 const ID_SEND: isize = 101;
 const ID_CANCEL: isize = 102;
 const ID_EXPRESS: isize = 103;
+const ID_ADVENTURE: isize = 104;
 const ID_PEER_BASE: isize = 200;
 
 fn wide(s: &str) -> Vec<u16> {
@@ -67,8 +69,10 @@ fn wide(s: &str) -> Vec<u16> {
 const TOP: i32 = 46;
 
 /// Show the compose window modally relative to `owner`. Returns
-/// `(text, peers, express)` or `None` if cancelled / no peers.
-pub fn present(owner: HWND, peers: &[String]) -> Option<(String, Vec<String>, bool)> {
+/// `(text, peers, express, adventure)` or `None` if cancelled / no peers.
+/// `adventure` is the "Watch the journey" box - the caller plays the
+/// `adventure` cutscene after the send when it's set.
+pub fn present(owner: HWND, peers: &[String]) -> Option<(String, Vec<String>, bool, bool)> {
     if peers.is_empty() {
         unsafe {
             MessageBoxW(
@@ -105,6 +109,7 @@ pub fn present(owner: HWND, peers: &[String]) -> Option<(String, Vec<String>, bo
             peer_checkboxes: Vec::new(),
             edit: HWND::default(),
             express_cb: HWND::default(),
+            adventure_cb: HWND::default(),
             send_btn: HWND::default(),
             cancel_btn: HWND::default(),
             paper_brush: CreateSolidBrush(COLORREF(PAPER)),
@@ -113,7 +118,9 @@ pub fn present(owner: HWND, peers: &[String]) -> Option<(String, Vec<String>, bo
             done: false,
         });
 
-        let (ww, wh) = (380i32, TOP + 264i32 + peer_rows_h);
+        // TOP + 264 is the restyled base; + 30 for the "Watch the journey"
+        // checkbox row under "express" (which also pushes the buttons down).
+        let (ww, wh) = (380i32, TOP + 294i32 + peer_rows_h);
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
@@ -238,7 +245,19 @@ unsafe extern "system" fn compose_proc(
             SendMessageW(express_cb, WM_SETFONT, WPARAM(st.body_font.0 as usize), LPARAM(1));
             st.express_cb = express_cb;
 
-            let buttons_y = express_y + 34;
+            let adventure_y = express_y + 24;
+            let adventure_cb = CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                w!("Watch the journey \u{1F3F0}"),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                20, adventure_y, 260, 22, hwnd, HMENU(ID_ADVENTURE as *mut _), hinst, None,
+            )
+            .unwrap_or_default();
+            SendMessageW(adventure_cb, WM_SETFONT, WPARAM(st.body_font.0 as usize), LPARAM(1));
+            st.adventure_cb = adventure_cb;
+
+            let buttons_y = adventure_y + 34;
             st.send_btn = CreateWindowExW(
                 Default::default(),
                 w!("BUTTON"),
@@ -401,8 +420,10 @@ unsafe extern "system" fn compose_proc(
                     let peers = selected_peers(st);
                     let express = !st.express_cb.0.is_null()
                         && SendMessageW(st.express_cb, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1;
+                    let adventure = !st.adventure_cb.0.is_null()
+                        && SendMessageW(st.adventure_cb, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1;
                     if !text.trim().is_empty() && !peers.is_empty() {
-                        st.result = Some((text.trim().to_string(), peers, express));
+                        st.result = Some((text.trim().to_string(), peers, express, adventure));
                     }
                     st.done = true;
                     LRESULT(0)

@@ -255,9 +255,22 @@ final class Runtime {
     @objc private func menuSendMessage() { presentMessageComposer() }
     @objc private func menuReadLetter() { openUnreadLetter() }
 
+    /// Holds the non-modal adventure cutscene window alive until it closes
+    /// itself (nothing else retains it).
+    private var adventureWindow: AdventureWindow?
+
     func presentMessageComposer() {
-        guard let (text, peers, express) = MessageComposer.present(peerNames: transport.peerNames) else { return }
+        guard let (text, peers, express, adventure) = MessageComposer.present(peerNames: transport.peerNames) else { return }
         sendMessage(text, to: peers, express: express)
+        if adventure {
+            // Non-modal: the window animates on its own timer and closes itself
+            // when the pet reaches the castle. Mirrors src-win/src/adventure.rs
+            // (which is modal there - see AdventureWindow's note).
+            let window = AdventureWindow(skin: state.skinId, accessories: Array(state.accessoryIds), express: express)
+            window.onClose = { [weak self] in self?.adventureWindow = nil }
+            adventureWindow = window
+            window.run()
+        }
     }
 
     /// Shows an arrived letter in the same letter-styled window used for

@@ -51,7 +51,7 @@ final class SpeechBubble {
     }
 
     /// Called every runtime tick while visible so the bubble rides along above
-    /// the pet as it walks, dances, or gets dragged, instead of staying pinned
+    /// the pet as it walks, jumps, or gets dragged, instead of staying pinned
     /// to wherever it happened to be when `show` fired.
     func follow(above petFrame: CGRect) {
         guard isVisible else { return }

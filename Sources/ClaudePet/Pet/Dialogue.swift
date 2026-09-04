@@ -13,7 +13,7 @@ enum Dialogue {
         .dirty: ["requesting a full system refresh", "streamlining my hygiene stack", "ew, technical debt on my fur", "let's circle back on cleanliness"],
     ]
 
-    // MARK: - Feed-triggered dance
+    // MARK: - Feed-triggered eating
 
     private static let celebrationLines = [
         "leaning into my north star!",

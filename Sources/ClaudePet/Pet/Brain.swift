@@ -5,7 +5,7 @@ import CoreGraphics
 /// `happy` pet can still be in `.walk` or `.idle` anim state.
 enum PetMood {
     enum AnimState: String {
-        case idle, walk, sleep, sad, dragged, angry, fall, dance
+        case idle, walk, sleep, sad, dragged, angry, fall, eat, jump
     }
 }
 
@@ -24,7 +24,10 @@ final class Brain {
     private var isBeingDragged = false
     private(set) var isDistracted = false
     private(set) var isFalling = false
-    private(set) var isDancing = false
+    /// Set while the pet is mid-`eat` (fed) or mid-`jump` (played with) - a
+    /// brief, self-expiring reaction that preempts the normal idle/walk picker.
+    private(set) var isBusy = false
+    private var busyAnim: PetMood.AnimState?
 
     private let rng: () -> Double
 
@@ -33,11 +36,12 @@ final class Brain {
     /// is driving it (the Accessibility read matched the URL but couldn't get
     /// window geometry) - see `Runtime.applySighting`.
     private static let angrySpeed: CGFloat = 4.5
-    private static let danceDuration: TimeInterval = 2.6
-    private static let danceShimmyAmplitude: CGFloat = 6
-    private static let danceShimmyRate: Double = 5.5 // radians/sec
+    private static let eatDuration: TimeInterval = 2.2
+    private static let jumpDuration: TimeInterval = 2.6
+    private static let jumpAmplitude: CGFloat = 12
+    private static let jumpRate: Double = 6.5 // radians/sec
 
-    private var danceStartTime: Date = .distantPast
+    private var busyStartTime: Date = .distantPast
     private var lastShimmyOffset: CGFloat = 0
 
     init(rng: @escaping () -> Double = { Double.random(in: 0...1) }) {
@@ -46,7 +50,8 @@ final class Brain {
 
     func beginDrag() {
         isBeingDragged = true
-        isDancing = false
+        isBusy = false
+        busyAnim = nil
         anim = .dragged
     }
 
@@ -76,16 +81,27 @@ final class Brain {
     }
 
     /// Triggered by the Runtime whenever the pet gets fed - a brief, self-
-    /// expiring celebration that preempts the normal idle/walk picker but
-    /// yields to anything physically incompatible with dancing (being
-    /// dragged or mid-fall).
-    func celebrate(now: Date = Date()) {
+    /// expiring eating animation (stays in place) that yields to anything
+    /// physically incompatible with it (being dragged or mid-fall).
+    func eat(now: Date = Date()) {
         guard !isBeingDragged, !isFalling else { return }
-        isDancing = true
-        anim = .dance
-        danceStartTime = now
+        isBusy = true
+        busyAnim = .eat
+        anim = .eat
+        busyStartTime = now
+        stateEndTime = now.addingTimeInterval(Self.eatDuration)
+    }
+
+    /// Triggered by the Runtime whenever the pet is played with - a brief,
+    /// self-expiring hop-around-in-place reaction, same preemption rules as `eat`.
+    func jump(now: Date = Date()) {
+        guard !isBeingDragged, !isFalling else { return }
+        isBusy = true
+        busyAnim = .jump
+        anim = .jump
+        busyStartTime = now
         lastShimmyOffset = 0
-        stateEndTime = now.addingTimeInterval(Self.danceDuration)
+        stateEndTime = now.addingTimeInterval(Self.jumpDuration)
     }
 
     /// Advances the behavior state machine. Returns the horizontal distance (in
@@ -113,17 +129,19 @@ final class Brain {
             return facingRight ? Self.angrySpeed : -Self.angrySpeed
         }
 
-        if isDancing {
+        if isBusy, let busyAnim {
             if now >= stateEndTime {
-                isDancing = false
-                stateEndTime = .distantPast // force a re-pick now that the dance is over
+                isBusy = false
+                self.busyAnim = nil
+                stateEndTime = .distantPast // force a re-pick now that it's over
             } else {
-                anim = .dance
-                // Groove side to side in place: a sine offset from the dance's
+                anim = busyAnim
+                guard busyAnim == .jump else { return 0 }
+                // Hop side to side in place: a sine offset from the jump's
                 // start, converted to a per-tick delta since `tick` returns a
                 // relative move rather than an absolute position.
-                let elapsed = now.timeIntervalSince(danceStartTime)
-                let offset = CGFloat(sin(elapsed * Self.danceShimmyRate)) * Self.danceShimmyAmplitude
+                let elapsed = now.timeIntervalSince(busyStartTime)
+                let offset = CGFloat(sin(elapsed * Self.jumpRate)) * Self.jumpAmplitude
                 let dx = offset - lastShimmyOffset
                 lastShimmyOffset = offset
                 return dx

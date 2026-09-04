@@ -1,5 +1,5 @@
 //! The pet's behaviour state machine - what it's *doing* on screen (idle / walk /
-//! sleep / dance / angry / fall), as opposed to `Mood` which is about stats.
+//! sleep / eat / jump / angry / fall), as opposed to `Mood` which is about stats.
 //! Mirrors `Sources/ClaudePet/Pet/Brain.swift`.
 //!
 //! All timestamps are wall-clock seconds (f64); `f64::NEG_INFINITY` stands in
@@ -16,14 +16,16 @@ pub enum AnimState {
     Dragged,
     Angry,
     Fall,
-    Dance,
+    Eat,
+    Jump,
 }
 
 const WALK_SPEED: f64 = 1.2;
 const ANGRY_SPEED: f64 = 4.5;
-const DANCE_DURATION: f64 = 2.6;
-const DANCE_SHIMMY_AMPLITUDE: f64 = 6.0;
-const DANCE_SHIMMY_RATE: f64 = 5.5; // radians/sec
+const EAT_DURATION: f64 = 2.2;
+const JUMP_DURATION: f64 = 2.6;
+const JUMP_AMPLITUDE: f64 = 12.0;
+const JUMP_RATE: f64 = 6.5; // radians/sec
 
 pub struct Brain {
     anim: AnimState,
@@ -32,8 +34,9 @@ pub struct Brain {
     is_being_dragged: bool,
     is_distracted: bool,
     is_falling: bool,
-    is_dancing: bool,
-    dance_start_time: f64,
+    is_busy: bool,
+    busy_anim: Option<AnimState>,
+    busy_start_time: f64,
     last_shimmy_offset: f64,
     rng: Box<dyn FnMut() -> f64 + Send>,
 }
@@ -51,8 +54,9 @@ impl Brain {
             is_being_dragged: false,
             is_distracted: false,
             is_falling: false,
-            is_dancing: false,
-            dance_start_time: f64::NEG_INFINITY,
+            is_busy: false,
+            busy_anim: None,
+            busy_start_time: f64::NEG_INFINITY,
             last_shimmy_offset: 0.0,
             rng,
         }
@@ -74,7 +78,8 @@ impl Brain {
 
     pub fn begin_drag(&mut self) {
         self.is_being_dragged = true;
-        self.is_dancing = false;
+        self.is_busy = false;
+        self.busy_anim = None;
         self.anim = AnimState::Dragged;
     }
 
@@ -104,21 +109,36 @@ impl Brain {
         }
     }
 
-    /// A brief, self-expiring celebration (fed the pet) that preempts the normal
-    /// idle/walk picker but yields to being dragged or mid-fall.
-    pub fn celebrate(&mut self, now: f64) {
+    /// A brief, self-expiring eating animation (fed the pet, stays in place)
+    /// that preempts the normal idle/walk picker but yields to being dragged
+    /// or mid-fall.
+    pub fn eat(&mut self, now: f64) {
         if self.is_being_dragged || self.is_falling {
             return;
         }
-        self.is_dancing = true;
-        self.anim = AnimState::Dance;
-        self.dance_start_time = now;
+        self.is_busy = true;
+        self.busy_anim = Some(AnimState::Eat);
+        self.anim = AnimState::Eat;
+        self.busy_start_time = now;
+        self.state_end_time = now + EAT_DURATION;
+    }
+
+    /// A brief, self-expiring hop-around-in-place reaction (played with the
+    /// pet), same preemption rules as `eat`.
+    pub fn jump(&mut self, now: f64) {
+        if self.is_being_dragged || self.is_falling {
+            return;
+        }
+        self.is_busy = true;
+        self.busy_anim = Some(AnimState::Jump);
+        self.anim = AnimState::Jump;
+        self.busy_start_time = now;
         self.last_shimmy_offset = 0.0;
-        self.state_end_time = now + DANCE_DURATION;
+        self.state_end_time = now + JUMP_DURATION;
     }
 
     /// Advances the behaviour state machine. Returns the horizontal distance (in
-    /// points) to move this tick if walking/angry/dancing, else 0.
+    /// points) to move this tick if walking/angry/jumping, else 0.
     pub fn tick(&mut self, now: f64, mood: Mood) -> f64 {
         if self.is_being_dragged {
             return 0.0;
@@ -142,16 +162,20 @@ impl Brain {
             };
         }
 
-        if self.is_dancing {
+        if self.is_busy {
             if now >= self.state_end_time {
-                self.is_dancing = false;
+                self.is_busy = false;
+                self.busy_anim = None;
                 self.state_end_time = f64::NEG_INFINITY; // force a re-pick now
-            } else {
-                self.anim = AnimState::Dance;
-                // Groove side to side in place: a sine offset from the dance's
+            } else if let Some(busy_anim) = self.busy_anim {
+                self.anim = busy_anim;
+                if busy_anim != AnimState::Jump {
+                    return 0.0;
+                }
+                // Hop side to side in place: a sine offset from the jump's
                 // start, converted to a per-tick delta.
-                let elapsed = now - self.dance_start_time;
-                let offset = (elapsed * DANCE_SHIMMY_RATE).sin() * DANCE_SHIMMY_AMPLITUDE;
+                let elapsed = now - self.busy_start_time;
+                let offset = (elapsed * JUMP_RATE).sin() * JUMP_AMPLITUDE;
                 let dx = offset - self.last_shimmy_offset;
                 self.last_shimmy_offset = offset;
                 return dx;
@@ -277,22 +301,42 @@ mod tests {
     }
 
     #[test]
-    fn celebrate_enters_dance_then_expires() {
+    fn eat_enters_eat_then_expires() {
         let mut b = Brain::with_rng(seq_rng(vec![0.1]));
-        b.celebrate(0.0);
-        assert_eq!(b.anim(), AnimState::Dance);
+        b.eat(0.0);
+        assert_eq!(b.anim(), AnimState::Eat);
         b.tick(1.0, Mood::Content);
-        assert_eq!(b.anim(), AnimState::Dance);
-        // After DANCE_DURATION the dance ends and a normal state is picked.
-        b.tick(DANCE_DURATION + 0.1, Mood::Content);
-        assert_ne!(b.anim(), AnimState::Dance);
+        assert_eq!(b.anim(), AnimState::Eat);
+        // After EAT_DURATION eating ends and a normal state is picked.
+        b.tick(EAT_DURATION + 0.1, Mood::Content);
+        assert_ne!(b.anim(), AnimState::Eat);
     }
 
     #[test]
-    fn celebrate_ignored_while_dragged() {
+    fn eat_ignored_while_dragged() {
         let mut b = Brain::with_rng(seq_rng(vec![0.0]));
         b.begin_drag();
-        b.celebrate(0.0);
+        b.eat(0.0);
+        assert_eq!(b.anim(), AnimState::Dragged);
+    }
+
+    #[test]
+    fn jump_enters_jump_then_expires() {
+        let mut b = Brain::with_rng(seq_rng(vec![0.1]));
+        b.jump(0.0);
+        assert_eq!(b.anim(), AnimState::Jump);
+        b.tick(1.0, Mood::Content);
+        assert_eq!(b.anim(), AnimState::Jump);
+        // After JUMP_DURATION the jump ends and a normal state is picked.
+        b.tick(JUMP_DURATION + 0.1, Mood::Content);
+        assert_ne!(b.anim(), AnimState::Jump);
+    }
+
+    #[test]
+    fn jump_ignored_while_dragged() {
+        let mut b = Brain::with_rng(seq_rng(vec![0.0]));
+        b.begin_drag();
+        b.jump(0.0);
         assert_eq!(b.anim(), AnimState::Dragged);
     }
 }

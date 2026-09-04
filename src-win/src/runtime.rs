@@ -366,7 +366,7 @@ impl Runtime {
     pub fn is_fast_motion(&self) -> bool {
         matches!(
             self.brain.anim(),
-            AnimState::Walk | AnimState::Angry | AnimState::Fall | AnimState::Dance
+            AnimState::Walk | AnimState::Angry | AnimState::Fall | AnimState::Jump
         ) || self.outbound.is_some()
             || self.inbound.is_some()
             || self.dock_in.is_some()
@@ -561,7 +561,7 @@ impl Runtime {
 
     pub fn feed(&mut self) {
         self.state.feed();
-        self.brain.celebrate(now_secs());
+        self.brain.eat(now_secs());
         let line = self.dialogue.celebration_line().to_string();
         self.set_bubble(line, 3.0);
         self.persist_now();
@@ -569,6 +569,7 @@ impl Runtime {
 
     pub fn play(&mut self) {
         self.state.play();
+        self.brain.jump(now_secs());
         self.set_bubble("leveraging some blue-sky thinking".into(), 3.0);
         self.persist_now();
     }

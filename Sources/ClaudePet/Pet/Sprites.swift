@@ -299,9 +299,9 @@ enum PetSprites {
         ".........1111...",
     ])
 
-    // Feed-triggered celebration: alternates a crouch (arms out, legs wide) with
-    // a jump (arms raised above the head, legs together) for a bouncy wiggle.
-    private static let danceCrouch: [[UInt8]] = parse([
+    // Play-triggered hop: alternates a crouch (arms out, legs wide) with a
+    // jump (arms raised above the head, legs together) for a bouncy hop.
+    private static let jumpCrouch: [[UInt8]] = parse([
         "................",
         "................",
         "................",
@@ -320,7 +320,7 @@ enum PetSprites {
         "................",
     ])
 
-    private static let danceJump: [[UInt8]] = parse([
+    private static let jumpAirborne: [[UInt8]] = parse([
         "................",
         "................",
         "................",
@@ -341,8 +341,8 @@ enum PetSprites {
 
     /// Shifts every row of a grid horizontally by `amount` columns (positive =
     /// right), dropping anything pushed past the edge rather than wrapping.
-    /// Used to turn the crouch/jump poses into a full lean-left/lean-right
-    /// dance without hand-authoring yet more frames.
+    /// Used to turn the crouch/airborne poses into full lean-left/lean-right
+    /// hops without hand-authoring yet more frames.
     private static func shiftColumns(_ grid: [[UInt8]], by amount: Int) -> [[UInt8]] {
         grid.map { row in
             var shifted = [UInt8](repeating: 0, count: row.count)
@@ -356,10 +356,31 @@ enum PetSprites {
         }
     }
 
-    private static let danceLeanLeft = shiftColumns(danceCrouch, by: -2)
-    private static let danceLeanRight = shiftColumns(danceCrouch, by: 2)
-    private static let danceJumpLeft = shiftColumns(danceJump, by: -1)
-    private static let danceJumpRight = shiftColumns(danceJump, by: 1)
+    private static let jumpLeanLeft = shiftColumns(jumpCrouch, by: -2)
+    private static let jumpLeanRight = shiftColumns(jumpCrouch, by: 2)
+    private static let jumpAirborneLeft = shiftColumns(jumpAirborne, by: -1)
+    private static let jumpAirborneRight = shiftColumns(jumpAirborne, by: 1)
+
+    // Feed-triggered eating: an open-mouth chew frame (a black patch below the
+    // eyes) alternated with the plain idle pose for a closed-mouth chew.
+    private static let eatOpen: [[UInt8]] = parse([
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "....11111111....",
+        "...1111111111...",
+        "...1122112211...",
+        "1111122112211111",
+        "1111112222111111",
+        "...1111111111...",
+        "...1111111111...",
+        "...1111..1111...",
+        "...1111..1111...",
+    ])
 
     private static let dragged1: [[UInt8]] = parse([
         "................",
@@ -401,8 +422,9 @@ enum PetSprites {
         .dragged: SpriteClip(frames: [dragged1], frameDuration: 0.2, loops: true),
         .angry: SpriteClip(frames: [angry1, angry2], frameDuration: 1.0 / 10.0, loops: true),
         .fall: SpriteClip(frames: [fall1, fall2], frameDuration: 1.0 / 8.0, loops: true),
-        .dance: SpriteClip(
-            frames: [danceLeanLeft, danceJumpLeft, danceCrouch, danceJump, danceLeanRight, danceJumpRight, danceCrouch, danceJump],
+        .eat: SpriteClip(frames: [eatOpen, idle1], frameDuration: 0.22, loops: true),
+        .jump: SpriteClip(
+            frames: [jumpLeanLeft, jumpAirborneLeft, jumpCrouch, jumpAirborne, jumpLeanRight, jumpAirborneRight, jumpCrouch, jumpAirborne],
             frameDuration: 0.11,
             loops: true
         ),

@@ -6,7 +6,7 @@ import AppKit
 /// `PetMessage`s so a peer's chosen skin renders correctly on the receiving
 /// screen too (see `PetMessage.senderSkin`).
 enum SkinId: String, Codable, CaseIterable {
-    case classic, principal, clown, plant
+    case classic, principal, clown, plant, sillyDuck, goose
 
     var displayName: String {
         switch self {
@@ -14,6 +14,8 @@ enum SkinId: String, Codable, CaseIterable {
         case .principal: return "Principal"
         case .clown: return "Clown"
         case .plant: return "Potted Plant"
+        case .sillyDuck: return "Silly Duck"
+        case .goose: return "Silly Goose"
         }
     }
 }
@@ -62,6 +64,8 @@ enum Skins {
         .principal: buildPrincipal(),
         .clown: buildClown(),
         .plant: buildPlant(),
+        .sillyDuck: buildSillyDuck(),
+        .goose: buildGoose(),
     ]
 
     private static func blankGrid() -> [[UInt8]] {
@@ -218,6 +222,65 @@ enum Skins {
         for c in 4...6 { topper.append((5, c, 4)) }
         for c in 9...11 { topper.append((5, c, 4)) }
         return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: topper))
+    }
+
+    /// A goofy white duck: a stubby orange beak stamped below the eyes and a
+    /// pair of big orange webbed feet, on an otherwise all-white body.
+    private static func buildSillyDuck() -> SkinDef {
+        let palette: [UInt8: NSColor] = [
+            1: NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.945, alpha: 1), // white feathers
+            2: NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.078, alpha: 1), // eyes
+            3: NSColor(calibratedRed: 0.9, green: 0.55, blue: 0.4, alpha: 1),      // flushed feathers (angry)
+            4: NSColor(calibratedRed: 0.949, green: 0.6, blue: 0.157, alpha: 1),   // beak + feet
+        ]
+        var topper: [(row: Int, col: Int, value: UInt8)] = []
+        // Stubby beak below the eyes, tapering to a point.
+        for c in 6...9 { topper.append((11, c, 4)) }
+        topper.append((12, 7, 4))
+        topper.append((12, 8, 4))
+        // Big webbed orange feet.
+        for c in 3...6 { topper.append((15, c, 4)) }
+        for c in 9...12 { topper.append((15, c, 4)) }
+        return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: topper))
+    }
+
+    /// A Canada-goose-styled look: a black head/neck with a white cheek
+    /// "chinstrap", a gray-brown body, and a dark-orange beak + feet. Unlike
+    /// the duck (a flat recolor), the head above the neckline gets a
+    /// different color than the body, the same row-split trick `buildPrincipal`
+    /// uses for its suit.
+    private static func buildGoose() -> SkinDef {
+        let palette: [UInt8: NSColor] = [
+            1: NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.106, alpha: 1), // black head
+            2: NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.078, alpha: 1), // eyes
+            3: NSColor(calibratedRed: 0.302, green: 0.106, blue: 0.106, alpha: 1), // head angry flush
+            4: NSColor(calibratedRed: 0.596, green: 0.576, blue: 0.502, alpha: 1), // gray-brown body
+            5: NSColor(calibratedRed: 0.545, green: 0.4, blue: 0.32, alpha: 1),    // body angry flush
+            6: NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.945, alpha: 1), // white chinstrap
+            7: NSColor(calibratedRed: 0.831, green: 0.482, blue: 0.106, alpha: 1), // beak + feet
+        ]
+        var topper: [(row: Int, col: Int, value: UInt8)] = []
+        // White cheek patches flanking the head, plus a chin band, forming a
+        // chinstrap around the black head without covering either eye.
+        topper.append((9, 3, 6)); topper.append((9, 12, 6))
+        topper.append((10, 3, 6)); topper.append((10, 12, 6))
+        for c in 6...9 { topper.append((11, c, 6)) }
+        // Beak, stamped over the chin band.
+        for c in 6...9 { topper.append((11, c, 7)) }
+        topper.append((12, 7, 7))
+        topper.append((12, 8, 7))
+        // Big webbed feet.
+        for c in 3...6 { topper.append((15, c, 7)) }
+        for c in 9...12 { topper.append((15, c, 7)) }
+        return SkinDef(
+            palette: palette,
+            clips: transformRowSplit(
+                headBoundaryRow: 11,
+                headMap: [1: 1, 2: 2, 3: 3],
+                bodyMap: [1: 4, 2: 2, 3: 5],
+                topper: topper
+            )
+        )
     }
 }
 

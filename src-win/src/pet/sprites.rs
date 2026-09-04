@@ -204,7 +204,7 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
         ".....111.1111...",
         ".........1111...",
     ]);
-    let dance_crouch = grid(&[
+    let jump_crouch = grid(&[
         "....11111111....",
         "...1111111111...",
         "...1111111111...",
@@ -215,7 +215,7 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
         "..1111....1111..",
         "................",
     ]);
-    let dance_jump = parse(&[
+    let jump_airborne = parse(&[
         "................",
         "................",
         "................",
@@ -233,6 +233,17 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
         "....111111......",
         "....111111......",
     ]);
+    let eat_open = grid(&[
+        "....11111111....",
+        "...1111111111...",
+        "...1122112211...",
+        "1111122112211111",
+        "1111112222111111",
+        "...1111111111...",
+        "...1111111111...",
+        "...1111..1111...",
+        "...1111..1111...",
+    ]);
     let dragged1 = grid(&[
         "....11111111....",
         "...1111111111...",
@@ -245,10 +256,10 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
         "................",
     ]);
 
-    let dance_lean_left = shift_columns(&dance_crouch, -2);
-    let dance_lean_right = shift_columns(&dance_crouch, 2);
-    let dance_jump_left = shift_columns(&dance_jump, -1);
-    let dance_jump_right = shift_columns(&dance_jump, 1);
+    let jump_lean_left = shift_columns(&jump_crouch, -2);
+    let jump_lean_right = shift_columns(&jump_crouch, 2);
+    let jump_airborne_left = shift_columns(&jump_airborne, -1);
+    let jump_airborne_right = shift_columns(&jump_airborne, 1);
 
     let mut m = HashMap::new();
     m.insert(
@@ -265,7 +276,7 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
     );
     m.insert(
         AnimState::Sad,
-        SpriteClip { frames: vec![sad1, idle1], frame_duration: 0.8, loops: true },
+        SpriteClip { frames: vec![sad1, idle1.clone()], frame_duration: 0.8, loops: true },
     );
     m.insert(
         AnimState::Dragged,
@@ -280,17 +291,21 @@ fn build_clips() -> HashMap<AnimState, SpriteClip> {
         SpriteClip { frames: vec![fall1, fall2], frame_duration: 1.0 / 8.0, loops: true },
     );
     m.insert(
-        AnimState::Dance,
+        AnimState::Eat,
+        SpriteClip { frames: vec![eat_open, idle1], frame_duration: 0.22, loops: true },
+    );
+    m.insert(
+        AnimState::Jump,
         SpriteClip {
             frames: vec![
-                dance_lean_left,
-                dance_jump_left,
-                dance_crouch.clone(),
-                dance_jump.clone(),
-                dance_lean_right,
-                dance_jump_right,
-                dance_crouch,
-                dance_jump,
+                jump_lean_left,
+                jump_airborne_left,
+                jump_crouch.clone(),
+                jump_airborne.clone(),
+                jump_lean_right,
+                jump_airborne_right,
+                jump_crouch,
+                jump_airborne,
             ],
             frame_duration: 0.11,
             loops: true,
@@ -311,10 +326,13 @@ pub enum SkinId {
     Principal,
     Clown,
     Plant,
+    SillyDuck,
+    Goose,
 }
 
 impl SkinId {
-    pub const ALL: [SkinId; 4] = [SkinId::Classic, SkinId::Principal, SkinId::Clown, SkinId::Plant];
+    pub const ALL: [SkinId; 6] =
+        [SkinId::Classic, SkinId::Principal, SkinId::Clown, SkinId::Plant, SkinId::SillyDuck, SkinId::Goose];
 
     pub fn display_name(self) -> &'static str {
         match self {
@@ -322,6 +340,8 @@ impl SkinId {
             SkinId::Principal => "Principal",
             SkinId::Clown => "Clown",
             SkinId::Plant => "Potted Plant",
+            SkinId::SillyDuck => "Silly Duck",
+            SkinId::Goose => "Silly Goose",
         }
     }
 }
@@ -464,6 +484,8 @@ pub static SKINS: LazyLock<HashMap<SkinId, SkinDef>> = LazyLock::new(|| {
     m.insert(SkinId::Principal, build_principal());
     m.insert(SkinId::Clown, build_clown());
     m.insert(SkinId::Plant, build_plant());
+    m.insert(SkinId::SillyDuck, build_silly_duck());
+    m.insert(SkinId::Goose, build_goose());
     m
 });
 
@@ -570,6 +592,78 @@ fn build_plant() -> SkinDef {
         topper.push((5, c, 4u8));
     }
     SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+}
+
+/// A goofy white duck: a stubby orange beak stamped below the eyes and a
+/// pair of big orange webbed feet, on an otherwise all-white body. Mirrors
+/// `buildSillyDuck` in `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_silly_duck() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [246, 246, 241, 255], // 1 white feathers
+        [19, 19, 19, 255],    // 2 eyes
+        [229, 140, 102, 255], // 3 flushed feathers (angry)
+        [242, 153, 40, 255],  // 4 beak + feet
+    ];
+    let mut topper = Vec::new();
+    // Stubby beak below the eyes, tapering to a point.
+    for c in 6..=9 {
+        topper.push((11, c, 4u8));
+    }
+    topper.push((12, 7, 4u8));
+    topper.push((12, 8, 4u8));
+    // Big webbed orange feet.
+    for c in 3..=6 {
+        topper.push((15, c, 4u8));
+    }
+    for c in 9..=12 {
+        topper.push((15, c, 4u8));
+    }
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &topper) }
+}
+
+/// A Canada-goose-styled look: a black head/neck with a white cheek
+/// "chinstrap", a gray-brown body, and a dark-orange beak + feet. Unlike the
+/// duck (a flat recolor), the head above the neckline gets a different color
+/// than the body, the same row-split trick `build_principal` uses for its
+/// suit. Mirrors `buildGoose` in `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_goose() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [27, 27, 27, 255],    // 1 black head
+        [19, 19, 19, 255],    // 2 eyes
+        [77, 27, 27, 255],    // 3 head angry flush
+        [152, 147, 128, 255], // 4 gray-brown body
+        [139, 102, 82, 255],  // 5 body angry flush
+        [246, 246, 241, 255], // 6 white chinstrap
+        [212, 123, 27, 255],  // 7 beak + feet
+    ];
+    let mut topper = Vec::new();
+    // White cheek patches flanking the head, plus a chin band, forming a
+    // chinstrap around the black head without covering either eye.
+    topper.push((9, 3, 6u8));
+    topper.push((9, 12, 6u8));
+    topper.push((10, 3, 6u8));
+    topper.push((10, 12, 6u8));
+    for c in 6..=9 {
+        topper.push((11, c, 6u8));
+    }
+    // Beak, stamped over the chin band.
+    for c in 6..=9 {
+        topper.push((11, c, 7u8));
+    }
+    topper.push((12, 7, 7u8));
+    topper.push((12, 8, 7u8));
+    // Big webbed feet.
+    for c in 3..=6 {
+        topper.push((15, c, 7u8));
+    }
+    for c in 9..=12 {
+        topper.push((15, c, 7u8));
+    }
+    let head_map: HashMap<u8, u8> = [(1u8, 1u8), (2, 2), (3, 3)].into_iter().collect();
+    let body_map: HashMap<u8, u8> = [(1u8, 4u8), (2, 2), (3, 5)].into_iter().collect();
+    SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper) }
 }
 
 pub static ACCESSORIES: LazyLock<HashMap<AccessoryId, AccessoryDef>> = LazyLock::new(|| {
@@ -725,7 +819,8 @@ mod tests {
             AnimState::Dragged,
             AnimState::Angry,
             AnimState::Fall,
-            AnimState::Dance,
+            AnimState::Eat,
+            AnimState::Jump,
         ] {
             assert!(CLIPS.contains_key(&state), "missing clip for {state:?}");
         }

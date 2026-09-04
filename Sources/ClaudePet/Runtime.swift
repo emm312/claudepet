@@ -285,13 +285,14 @@ final class Runtime {
 
     func feed() {
         state.feed()
-        brain.celebrate()
+        brain.eat()
         showBubble(force: Dialogue.celebrationLine())
         persistSoon()
     }
 
     func play() {
         state.play()
+        brain.jump()
         showBubble(force: "leveraging some blue-sky thinking")
         persistSoon()
     }
@@ -597,7 +598,7 @@ final class Runtime {
     /// burns near-zero CPU while idle/asleep and stays smooth while walking.
     private func scheduleTick() {
         tickTimer?.invalidate()
-        let isFastMotion = brain.anim == .walk || brain.anim == .angry || brain.anim == .fall || brain.anim == .dance
+        let isFastMotion = brain.anim == .walk || brain.anim == .angry || brain.anim == .fall || brain.anim == .jump
             || outboundCourier != nil || inboundCourier != nil || rampage != nil
         let interval: TimeInterval = isFastMotion ? (1.0 / 30.0) : (1.0 / 8.0)
         tickTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in

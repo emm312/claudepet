@@ -328,11 +328,19 @@ pub enum SkinId {
     Plant,
     SillyDuck,
     Goose,
+    TennisBall,
 }
 
 impl SkinId {
-    pub const ALL: [SkinId; 6] =
-        [SkinId::Classic, SkinId::Principal, SkinId::Clown, SkinId::Plant, SkinId::SillyDuck, SkinId::Goose];
+    pub const ALL: [SkinId; 7] = [
+        SkinId::Classic,
+        SkinId::Principal,
+        SkinId::Clown,
+        SkinId::Plant,
+        SkinId::SillyDuck,
+        SkinId::Goose,
+        SkinId::TennisBall,
+    ];
 
     pub fn display_name(self) -> &'static str {
         match self {
@@ -342,6 +350,7 @@ impl SkinId {
             SkinId::Plant => "Potted Plant",
             SkinId::SillyDuck => "Silly Duck",
             SkinId::Goose => "Silly Goose",
+            SkinId::TennisBall => "Tennis Ball",
         }
     }
 }
@@ -361,15 +370,17 @@ impl Default for SkinId {
 pub enum AccessoryId {
     TopHat,
     Glasses,
+    ChefHat,
 }
 
 impl AccessoryId {
-    pub const ALL: [AccessoryId; 2] = [AccessoryId::TopHat, AccessoryId::Glasses];
+    pub const ALL: [AccessoryId; 3] = [AccessoryId::TopHat, AccessoryId::Glasses, AccessoryId::ChefHat];
 
     pub fn display_name(self) -> &'static str {
         match self {
             AccessoryId::TopHat => "Top Hat",
             AccessoryId::Glasses => "Glasses",
+            AccessoryId::ChefHat => "Chef Hat",
         }
     }
 }
@@ -509,6 +520,7 @@ pub static SKINS: LazyLock<HashMap<SkinId, SkinDef>> = LazyLock::new(|| {
     m.insert(SkinId::Plant, build_plant());
     m.insert(SkinId::SillyDuck, build_silly_duck());
     m.insert(SkinId::Goose, build_goose());
+    m.insert(SkinId::TennisBall, build_tennis_ball());
     m
 });
 
@@ -692,10 +704,47 @@ fn build_goose() -> SkinDef {
     SkinDef { palette, clips: transform_clips_row_split(11, &head_map, &body_map, &topper, &overlay) }
 }
 
+/// An optic-yellow tennis ball: a flat recolor of the classic rig plus the
+/// ball's two white seam curves facing each other - a "U" across the
+/// forehead (rows 7-8) and an upturned "n" across the belly (rows 12-13).
+/// Rows 9-11 are left alone because that's where the eyes land in some pose
+/// or other (`fall*` puts them at cols 4/11, the jump frames shift them), and
+/// no pose has an eye pixel on rows 7-8 or 12-13. The seam is an `overlay`
+/// (recolors existing body pixels only, see `build_silly_duck`) so it never
+/// paints into a gap a given pose leaves empty. Mirrors `buildTennisBall` in
+/// `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_tennis_ball() -> SkinDef {
+    let palette = vec![
+        [0, 0, 0, 0],
+        [214, 232, 62, 255],  // 1 optic yellow-green felt
+        [19, 19, 19, 255],    // 2 eyes
+        [222, 170, 50, 255],  // 3 angry tint
+        [246, 246, 241, 255], // 4 white seam
+    ];
+    let overlay = [
+        // Forehead "U".
+        (7, 5, 4u8),
+        (7, 10, 4u8),
+        (8, 6, 4u8),
+        (8, 7, 4u8),
+        (8, 8, 4u8),
+        (8, 9, 4u8),
+        // Belly "n", mirroring it.
+        (12, 6, 4u8),
+        (12, 7, 4u8),
+        (12, 8, 4u8),
+        (12, 9, 4u8),
+        (13, 5, 4u8),
+        (13, 10, 4u8),
+    ];
+    SkinDef { palette, clips: transform_clips(&identity_remap(), &[], &overlay) }
+}
+
 pub static ACCESSORIES: LazyLock<HashMap<AccessoryId, AccessoryDef>> = LazyLock::new(|| {
     let mut m = HashMap::new();
     m.insert(AccessoryId::TopHat, build_top_hat());
     m.insert(AccessoryId::Glasses, build_glasses());
+    m.insert(AccessoryId::ChefHat, build_chef_hat());
     m
 });
 
@@ -721,6 +770,32 @@ fn build_top_hat() -> AccessoryDef {
         g[6][c] = 1; // brim, flush on the hairline
     }
     AccessoryDef { palette: vec![[0, 0, 0, 0], [19, 19, 19, 255], [140, 27, 27, 255]], grid: g }
+}
+
+/// A puffy white chef's toque: three rounded lobes on top, a straight
+/// pleated crown, and a band whose bottom row sits on row 6 - flush on the
+/// hairline, the same anchoring `build_top_hat` uses. Mirrors `buildChefHat`
+/// in `Sources/ClaudePet/Pet/Skins.swift`.
+fn build_chef_hat() -> AccessoryDef {
+    let g = parse(&[
+        "................",
+        "....11.11.11....", // lobe tops
+        "...1111111111...",
+        "...1112112111...", // lobe creases
+        "....11111111....",
+        "....12111121....", // pleats
+        "....22222222....", // band, flush on the hairline
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+    ]);
+    AccessoryDef { palette: vec![[0, 0, 0, 0], [250, 250, 246, 255], [214, 214, 208, 255]], grid: g }
 }
 
 fn build_glasses() -> AccessoryDef {
@@ -779,6 +854,134 @@ pub static HORSE_FRAMES: LazyLock<[Vec<Vec<u8>>; 2]> = LazyLock::new(|| {
         ]),
     ]
 });
+
+/// What the courier rides on an express delivery. Persisted on
+/// `PetState::mount` and carried on outbound `PetMessage`s (`sender_mount`) so
+/// the receiving screen's visitor arrives on the sender's own mount, at that
+/// mount's speed. Mirrors `MountId` in `Sources/ClaudePet/Pet/MountSprite.swift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MountId {
+    #[default]
+    BrownHorse,
+    WhiteHorse,
+    BlackHorse,
+    Motorbike,
+}
+
+impl MountId {
+    pub const ALL: [MountId; 4] = [MountId::BrownHorse, MountId::WhiteHorse, MountId::BlackHorse, MountId::Motorbike];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            MountId::BrownHorse => "Brown Horse",
+            MountId::WhiteHorse => "White Horse",
+            MountId::BlackHorse => "Black Horse",
+            MountId::Motorbike => "Motorbike",
+        }
+    }
+}
+
+/// One mount's look and pace: its own palette, a 2-frame cycle (gallop or
+/// wheel spin), and the express speed multiplier on top of the courier's base
+/// speed. Every mount is 12 rows tall (widths vary - see `cols`) with its
+/// riding surface around rows 4-6, so the one shared
+/// `runtime::HORSE_RIDER_LIFT` keeps every mount's feet/wheels on the ground
+/// and the rider seated. Mirrors `MountDef` in
+/// `Sources/ClaudePet/Pet/MountSprite.swift`.
+pub struct MountDef {
+    pub palette: Vec<[u8; 4]>,
+    pub frames: Vec<Vec<Vec<u8>>>,
+    pub cols: usize,
+    pub frame_duration: f64,
+    /// Courier speed multiplier while riding - keep in sync with
+    /// `MountId.speedMultiplier` in Swift.
+    pub speed_mult: f64,
+}
+
+/// A horse recolor: the shared `HORSE_FRAMES` grids, with only palette
+/// indices 4 (hide) and 5 (mane/tail/hooves) swapped.
+fn horse_mount(body: [u8; 4], mane: [u8; 4]) -> MountDef {
+    let mut palette = PALETTE.to_vec();
+    palette[4] = body;
+    palette[5] = mane;
+    MountDef {
+        palette,
+        frames: HORSE_FRAMES.to_vec(),
+        cols: HORSE_GRID_COLS,
+        frame_duration: HORSE_FRAME_DURATION,
+        speed_mult: 3.0,
+    }
+}
+
+/// A red motorbike facing right like the horse: handlebar, fork and
+/// headlight at the front, a seat behind the tank, a tail fender, and a
+/// chrome engine and exhaust slung low between two wheels. It's 28 columns
+/// wide (the horse is 22) because the rider covers the middle of it - the
+/// horse gets away with less because its head and tail stick out - so the
+/// front end, fender, and engine/exhaust need to clear the rider to read.
+/// Its two frames differ only in the spokes (`+` then `x`), so the wheels
+/// read as spinning. It's faster than any horse.
+fn motorbike_mount() -> MountDef {
+    const TOP: [&str; 7] = [
+        "............................",
+        "............................",
+        ".....................13333..", // handlebar + grip
+        "........................3...", // fork
+        "........555555.222222...344.", // seat, tank, headlight
+        ".2222222222222222222222.34..", // tail fender, body
+        "222.....22222222222222..3...", // rear fender, lower body
+    ];
+    let frame = |wheels: [&str; 5]| {
+        let rows: Vec<&str> = TOP.iter().copied().chain(wheels).collect();
+        parse(&rows)
+    };
+    MountDef {
+        palette: vec![
+            [0, 0, 0, 0],
+            [28, 28, 30, 255],    // 1 tyres
+            [200, 48, 44, 255],   // 2 red body + tank
+            [178, 182, 188, 255], // 3 chrome: fork, engine, exhaust, spokes
+            [250, 214, 92, 255],  // 4 headlight
+            [48, 40, 38, 255],    // 5 seat
+        ],
+        frames: vec![
+            frame([
+                "..111.....3333333......111..",
+                ".1.3.1...333333333....1.3.1.", // engine, exhaust
+                ".133313333333333......13331.",
+                ".1.3.1.........33.....1.3.1.",
+                "..111..................111..",
+            ]),
+            frame([
+                "..111.....3333333......111..",
+                ".13.31...333333333....13.31.",
+                ".1.3.13333333333......1.3.1.",
+                ".13.31.........33.....13.31.",
+                "..111..................111..",
+            ]),
+        ],
+        cols: 28,
+        frame_duration: 1.0 / 16.0,
+        speed_mult: 4.0,
+    }
+}
+
+pub static MOUNTS: LazyLock<HashMap<MountId, MountDef>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert(MountId::BrownHorse, horse_mount(PALETTE[4], PALETTE[5]));
+    m.insert(MountId::WhiteHorse, horse_mount([232, 228, 220, 255], [150, 146, 140, 255]));
+    // The mane is lighter than the body so it still reads against it.
+    m.insert(MountId::BlackHorse, horse_mount([40, 36, 34, 255], [110, 104, 98, 255]));
+    m.insert(MountId::Motorbike, motorbike_mount());
+    m
+});
+
+impl MountId {
+    pub fn def(self) -> &'static MountDef {
+        &MOUNTS[&self]
+    }
+}
 
 /// The mail parcel carried on every courier leg - a plain envelope with a
 /// flap and a wax seal. Static (one frame): unlike the horse it doesn't need
@@ -877,6 +1080,41 @@ mod tests {
             assert_eq!(accessory.grid.len(), GRID_SIZE);
             for row in &accessory.grid {
                 assert_eq!(row.len(), GRID_SIZE);
+            }
+        }
+    }
+
+    #[test]
+    fn every_mount_has_full_size_frames_and_a_positive_speed() {
+        for id in MountId::ALL {
+            let mount = MOUNTS.get(&id).unwrap_or_else(|| panic!("no MountDef registered for {id:?}"));
+            assert_eq!(mount.frames.len(), 2, "{id:?} should have a 2-frame cycle");
+            for frame in &mount.frames {
+                assert_eq!(frame.len(), HORSE_FRAMES[0].len(), "{id:?} should match the horse's height");
+                for row in frame {
+                    assert_eq!(row.len(), mount.cols);
+                    assert!(row.iter().all(|&v| (v as usize) < mount.palette.len()), "{id:?} uses an index past its palette");
+                }
+            }
+            assert!(mount.frame_duration > 0.0);
+            assert!(mount.speed_mult > 1.0);
+        }
+        assert!(MountId::Motorbike.def().speed_mult > MountId::BrownHorse.def().speed_mult);
+    }
+
+    #[test]
+    fn tennis_ball_seam_never_covers_an_eye() {
+        let ball = &SKINS[&SkinId::TennisBall];
+        for (state, clip) in CLIPS.iter() {
+            for (fi, frame) in clip.frames.iter().enumerate() {
+                let skinned = &ball.clips[state].frames[fi];
+                for (r, row) in frame.iter().enumerate() {
+                    for (c, &v) in row.iter().enumerate() {
+                        if v == 2 {
+                            assert_eq!(skinned[r][c], 2, "{state:?} frame {fi}: seam covers the eye at ({r},{c})");
+                        }
+                    }
+                }
             }
         }
     }

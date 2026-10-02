@@ -11,7 +11,7 @@ use crate::pet::brain::{AnimState, Brain};
 use crate::pet::courier::{Courier, Phase};
 use crate::pet::dialogue::Dialogue;
 use crate::pet::pet_state::{now_secs, PetState, PetStateStore};
-use crate::pet::sprites::{AccessoryId, SkinId, CLIPS, GRID_SIZE};
+use crate::pet::sprites::{AccessoryId, MountId, SkinId, CLIPS, GRID_SIZE};
 use std::collections::{HashSet, VecDeque};
 
 pub const ZOOM: i32 = 5;
@@ -30,13 +30,14 @@ pub const BAR_H: i32 = 90;
 const BAR_HIT_PAD: i32 = 8; // the bar is tiny - give clicks a bigger target
 const DOCK_IN_SECS: f64 = 0.30; // "jumps in" glide toward the bar
 const UNDOCK_KICK: f64 = 240.0; // px/s sideways shove on "tumbles out"
-const EXPRESS_SPEED_MULT: f64 = 3.0; // courier speed on the horse - matches Courier.expressSpeedMultiplier in Swift
 
 /// Nearest-neighbour zoom for the carried-mail sprite - a smaller factor than
 /// the pet/horse `ZOOM` (5) so an 18x12 envelope doesn't render pet-sized.
 pub const MAIL_ZOOM: i32 = 2;
-/// How far the rider is lifted so it sits astride the horse's back rather than
-/// overlapping it. Mirrors `HorseSprite.riderLift`.
+/// How far the rider is lifted so it sits astride the horse's back (or the
+/// motorbike's seat) rather than overlapping it. Shared by every mount - they
+/// are all 12 rows tall, so this also keeps hooves/wheels on the ground.
+/// Mirrors `MountSprite.riderLift`.
 pub const HORSE_RIDER_LIFT: i32 = 16;
 /// Click padding around the little carried-mail rect - same idea as
 /// `BAR_HIT_PAD`, the envelope is a small target.
@@ -51,9 +52,13 @@ pub struct FrameSprite {
     pub facing_right: bool,
     /// Carrying the mail (any courier leg).
     pub carry_mail: bool,
-    /// Riding the horse (express delivery).
+    /// Riding a mount (express delivery) - a horse or the motorbike.
     pub on_horse: bool,
-    /// Which of `HORSE_FRAMES` to draw - only meaningful when `on_horse`.
+    /// Which mount - only meaningful when `on_horse`. The resident's is
+    /// snapshotted at send time; a visitor's is the delivering `PetMessage`'s
+    /// `sender_mount`.
+    pub mount: MountId,
+    /// Which of the mount's frames to draw - only meaningful when `on_horse`.
     pub horse_frame: usize,
     /// The actor's own chosen skin - `PetState::skin` for the resident, or the
     /// delivering `PetMessage`'s `sender_skin` for a visitor.
@@ -61,10 +66,24 @@ pub struct FrameSprite {
     pub accessories: Vec<AccessoryId>,
 }
 
-/// Picks a horse gallop frame from the wall clock, so `main::draw_actor`
-/// doesn't need any dedicated animation state threaded through `Runtime`.
-fn current_horse_frame() -> usize {
-    ((now_secs() / crate::pet::sprites::HORSE_FRAME_DURATION) as u64 % 2) as usize
+/// Picks a mount frame (gallop or wheel spin) from the wall clock, so
+/// `main::draw_actor` doesn't need any dedicated animation state threaded
+/// through `Runtime`.
+fn current_horse_frame(mount: MountId) -> usize {
+    let def = mount.def();
+    ((now_secs() / def.frame_duration) as u64 % def.frames.len() as u64) as usize
+}
+
+/// Courier speed multiplier for a trip carrying `message`: its sender's mount
+/// pace when express, plain walking speed otherwise. Used for the outbound
+/// trip, the inbound visitor, *and* the acker's `time_to_return` estimate, so
+/// all three agree on one speed.
+fn trip_speed_mult(message: &PetMessage) -> f64 {
+    if message.express {
+        message.sender_mount.unwrap_or_default().def().speed_mult
+    } else {
+        1.0
+    }
 }
 
 /// Screen rect `(x, y, w, h)` of the carried-mail sprite for `s`, in the same
@@ -135,6 +154,7 @@ pub struct Runtime {
     /// Recipients that have acked the in-flight outbound message.
     outbound_acked: HashSet<String>,
     outbound_express: bool,
+    outbound_mount: MountId,
     /// The datagram(s) for the in-flight trip are sent once, at `Away` entry -
     /// not at compose time - so a courier already `Departing` never races a
     /// same-tick ack. Cleared once sent.
@@ -147,6 +167,7 @@ pub struct Runtime {
     inbound_msg: Option<PetMessage>,
     inbound_handed_off: bool,
     inbound_express: bool,
+    inbound_mount: MountId,
     /// Letters that have arrived but not been read yet. The resident pet keeps
     /// holding the mail sprite while this is non-empty; clicking it opens the
     /// front one in a letter window (see `letter.rs`). In-memory only.
@@ -214,12 +235,14 @@ impl Runtime {
             outbound_pending: HashSet::new(),
             outbound_acked: HashSet::new(),
             outbound_express: false,
+            outbound_mount: MountId::default(),
             outbound_message: None,
             outbound_queue: VecDeque::new(),
             inbound: None,
             inbound_msg: None,
             inbound_handed_off: false,
             inbound_express: false,
+            inbound_mount: MountId::default(),
             unread: VecDeque::new(),
             visitor_x: 0.0,
             visitor_y: 0.0,
@@ -253,6 +276,7 @@ impl Runtime {
                 false,
                 SkinId::default(),
                 Vec::new(),
+                crate::pet::sprites::MountId::default(),
             ));
         }
 
@@ -610,10 +634,21 @@ impl Runtime {
         &self.state.accessories
     }
 
+    pub fn mount(&self) -> MountId {
+        self.state.mount
+    }
+
     /// Applies immediately (persists + the next frame renders it), mirroring
     /// `set_auto_update` - no separate "apply" step needed.
     pub fn set_skin(&mut self, id: SkinId) {
         self.state.skin = id;
+        self.persist_now();
+    }
+
+    /// Takes effect from the next send - an express trip already in flight
+    /// keeps the mount it left on (`outbound_mount`).
+    pub fn set_mount(&mut self, id: MountId) {
+        self.state.mount = id;
         self.persist_now();
     }
 
@@ -675,6 +710,7 @@ impl Runtime {
             express,
             self.state.skin,
             self.state.accessories.iter().copied().collect(),
+            self.state.mount,
         );
         self.outbound_queue.push_back(OutboundJob {
             message,
@@ -717,11 +753,14 @@ impl Runtime {
         self.outbound_pending = job.recipients.iter().cloned().collect();
         self.outbound_acked = HashSet::new();
         self.outbound_express = express;
+        self.outbound_mount = job.message.sender_mount.unwrap_or_default();
+        let mult = trip_speed_mult(&job.message);
         self.outbound_message = Some(job.message);
-        let mult = if express { EXPRESS_SPEED_MULT } else { 1.0 };
         self.outbound = Some(Courier::outbound(home_x, home_x, off_screen_x, edge, now, mult));
         self.brain.set_falling(false);
-        let line = if express {
+        let line = if express && self.outbound_mount == MountId::Motorbike {
+            "revving up - taking this one express".to_string()
+        } else if express {
             "saddling up - taking this one express".to_string()
         } else {
             self.dialogue.depart_line().to_string()
@@ -753,7 +792,7 @@ impl Runtime {
                 // (computed on this screen) so its courier can wait for it
                 // instead of turning around the instant the ack lands.
                 let (_, off_screen_x, handoff_x, _) = self.inbound_geometry(&message);
-                let mult = if message.express { EXPRESS_SPEED_MULT } else { 1.0 };
+                let mult = trip_speed_mult(&message);
                 let time_to_return =
                     crate::pet::courier::estimate_round_trip_duration((off_screen_x - handoff_x).abs(), mult);
                 self.transport.send(&message.make_ack(&self.local_name, time_to_return), &from);
@@ -803,7 +842,8 @@ impl Runtime {
         self.visitor_frame_elapsed = 0.0;
         self.inbound_handed_off = false;
         self.inbound_express = message.express;
-        let mult = if message.express { EXPRESS_SPEED_MULT } else { 1.0 };
+        self.inbound_mount = message.sender_mount.unwrap_or_default();
+        let mult = trip_speed_mult(&message);
         self.inbound = Some(Courier::inbound(off_screen_x, handoff_x, entry_edge, now, mult));
         self.inbound_msg = Some(message);
     }
@@ -990,7 +1030,8 @@ impl Runtime {
             facing_right: self.resident_facing_right(),
             carry_mail: couriering || !self.unread.is_empty(),
             on_horse: couriering && self.outbound_express,
-            horse_frame: current_horse_frame(),
+            mount: self.outbound_mount,
+            horse_frame: current_horse_frame(self.outbound_mount),
             skin: self.state.skin,
             accessories: self.state.accessories.iter().copied().collect(),
         })
@@ -1010,7 +1051,8 @@ impl Runtime {
             facing_right: self.visitor_facing_right,
             carry_mail: true, // a visitor always shows up holding the letter
             on_horse: self.inbound_express,
-            horse_frame: current_horse_frame(),
+            mount: self.inbound_mount,
+            horse_frame: current_horse_frame(self.inbound_mount),
             // The visiting peer's own chosen look, carried on the delivering
             // `PetMessage` - falls back to classic/no-accessories for a peer on
             // a build that predates skins.
@@ -1205,7 +1247,7 @@ mod tests {
         let fake = FakeTransport::with_peers(&["Sender"]);
         let mut rt = new_rt(&fake);
 
-        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new());
+        let msg = PetMessage::deliver("great progress".into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new(), crate::pet::sprites::MountId::default());
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
         rt.tick_at(2000.0); // spawns the inbound courier + visitor
@@ -1229,6 +1271,49 @@ mod tests {
         assert!(rt.visitor_sprite().is_none(), "visitor should be gone once done");
     }
 
+    /// The `time_to_return` an acker reports for an express delivery from a
+    /// sender riding `mount` - acks go out the tick the delivery lands.
+    fn express_ack_wait(mount: MountId) -> f64 {
+        let fake = FakeTransport::with_peers(&["Sender"]);
+        let mut rt = new_rt(&fake);
+        let msg = PetMessage::deliver("vroom".into(), "Sender".into(), crate::net::Edge::Right, true, SkinId::default(), Vec::new(), mount);
+        fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
+        rt.tick_at(2000.0);
+        let v = rt.visitor_sprite().expect("a visitor should be riding in");
+        assert!(v.on_horse);
+        assert_eq!(v.mount, mount, "the visitor arrives on the sender's own mount");
+        let sent = fake.sent.lock().unwrap();
+        let ack = sent.iter().find(|(m, _)| m.kind == Kind::Ack).expect("acked on receipt");
+        ack.0.time_to_return.expect("an ack carries time_to_return")
+    }
+
+    #[test]
+    fn motorbike_visitor_rides_in_faster_than_a_horse() {
+        let horse = express_ack_wait(MountId::BrownHorse);
+        let white = express_ack_wait(MountId::WhiteHorse);
+        let bike = express_ack_wait(MountId::Motorbike);
+        assert!((horse - white).abs() < 1e-9, "horse recolors are cosmetic only");
+        assert!(bike < horse, "the motorbike's 4x should beat the horse's 3x ({bike} vs {horse})");
+    }
+
+    #[test]
+    fn outbound_express_carries_and_rides_the_chosen_mount() {
+        let fake = FakeTransport::with_peers(&["PeerX"]);
+        let mut rt = new_rt(&fake);
+        rt.set_mount(MountId::Motorbike);
+        rt.send_message_at("ship it", &["PeerX".to_string()], true, 1000.0);
+        let s = rt.pet_sprite().expect("the resident is drawn");
+        assert!(s.on_horse);
+        assert_eq!(s.mount, MountId::Motorbike);
+        // Changing mounts mid-trip doesn't swap the one already ridden off on.
+        rt.set_mount(MountId::BlackHorse);
+        assert_eq!(rt.pet_sprite().unwrap().mount, MountId::Motorbike);
+
+        rt.tick_at(1000.0 + FAR);
+        let sent = fake.sent.lock().unwrap();
+        assert_eq!(sent[0].0.sender_mount, Some(MountId::Motorbike));
+    }
+
     #[test]
     fn express_inbound_visitor_rides_the_horse_and_carries_mail() {
         let fake = FakeTransport::with_peers(&["Sender"]);
@@ -1241,6 +1326,7 @@ mod tests {
             true, // express
             SkinId::default(),
             Vec::new(),
+            crate::pet::sprites::MountId::default(),
         );
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
@@ -1270,7 +1356,7 @@ mod tests {
         let mut rt = new_rt(&fake);
 
         let body = "the quarterly numbers are in, ping me";
-        let msg = PetMessage::deliver(body.into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new());
+        let msg = PetMessage::deliver(body.into(), "Sender".into(), crate::net::Edge::Right, false, SkinId::default(), Vec::new(), crate::pet::sprites::MountId::default());
         fake.inbox.lock().unwrap().push_back((msg, "Sender".into()));
 
         rt.tick_at(3000.0); // spawn the visitor

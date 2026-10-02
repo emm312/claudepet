@@ -74,4 +74,39 @@ struct SpritesTests {
         #expect(plain.width == withHat.width)
         #expect(plain.height == withHat.height)
     }
+
+    @Test func everyMountHasTwoFramesShapedLikeTheHorse() {
+        for id in MountId.allCases {
+            let grids = MountSprite.grids(for: id)
+            let palette = MountSprite.palette(for: id)
+            #expect(grids.count == 2, "\(id) should have a 2-frame cycle")
+            for grid in grids {
+                #expect(grid.count == Int(HorseSprite.gridSize.height), "\(id) wrong row count")
+                for row in grid {
+                    #expect(row.count == grid[0].count, "\(id) ragged row")
+                    #expect(row.allSatisfy { $0 == 0 || palette[$0] != nil }, "\(id) uses an index missing from its palette")
+                }
+            }
+            #expect(MountSprite.frames(for: id).count == 2)
+            #expect(id.speedMultiplier > 1)
+        }
+        #expect(MountId.motorbike.speedMultiplier > MountId.brownHorse.speedMultiplier)
+    }
+
+    @Test func tennisBallSeamNeverCoversAnEye() {
+        guard let ball = Skins.all[.tennisBall] else {
+            Issue.record("no tennis ball skin")
+            return
+        }
+        for (state, clip) in PetSprites.clips {
+            guard let skinned = ball.clips[state] else { continue }
+            for (fi, frame) in clip.frames.enumerated() {
+                for (r, row) in frame.enumerated() {
+                    for (c, v) in row.enumerated() where v == 2 {
+                        #expect(skinned.frames[fi][r][c] == 2, "\(state) frame \(fi): seam covers the eye at (\(r),\(c))")
+                    }
+                }
+            }
+        }
+    }
 }

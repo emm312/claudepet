@@ -104,4 +104,14 @@ struct CourierTests {
         #expect(courier.phase == .away)
         #expect(courier.anim == .idle)
     }
+
+    @Test func motorbikeRoundTripIsFasterThanAHorse() {
+        let horse = Courier.estimateRoundTripDuration(oneWayDistance: 900, express: true)
+        let white = Courier.estimateRoundTripDuration(oneWayDistance: 900, express: true, mount: .whiteHorse)
+        let bike = Courier.estimateRoundTripDuration(oneWayDistance: 900, express: true, mount: .motorbike)
+        let walking = Courier.estimateRoundTripDuration(oneWayDistance: 900, express: false, mount: .motorbike)
+        #expect(horse == white, "horse recolors are cosmetic only")
+        #expect(bike < horse)
+        #expect(walking > horse, "a non-express trip walks, whatever the mount")
+    }
 }

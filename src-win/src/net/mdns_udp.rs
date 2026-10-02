@@ -396,7 +396,7 @@ mod tests {
             PeerAddrs { advertised: Some(b_addr), learned: None },
         );
 
-        let msg = PetMessage::deliver("ping".into(), "A".into(), Edge::Right, false, crate::pet::sprites::SkinId::default(), Vec::new());
+        let msg = PetMessage::deliver("ping".into(), "A".into(), Edge::Right, false, crate::pet::sprites::SkinId::default(), Vec::new(), crate::pet::sprites::MountId::default());
         a.send(&msg, "B");
 
         // Give the recv thread a moment.

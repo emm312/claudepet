@@ -40,12 +40,16 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// same tolerance as `express`).
     let senderSkin: SkinId?
     let senderAccessories: [AccessoryId]?
+    /// The sender's express mount, so the receiving visitor arrives on it (and
+    /// at its speed, which also feeds the acker's `timeToReturn`). Optional
+    /// like `senderSkin`; a pre-mounts sender reads as the brown horse.
+    let senderMount: MountId?
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn, senderSkin, senderAccessories
+        case id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn, senderSkin, senderAccessories, senderMount
     }
 
-    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false, timeToReturn: TimeInterval? = nil, senderSkin: SkinId? = nil, senderAccessories: [AccessoryId]? = nil) {
+    init(id: UUID, kind: Kind, text: String, senderName: String, exitEdge: Edge, sentAt: Date, express: Bool = false, timeToReturn: TimeInterval? = nil, senderSkin: SkinId? = nil, senderAccessories: [AccessoryId]? = nil, senderMount: MountId? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
@@ -56,13 +60,17 @@ nonisolated struct PetMessage: Codable, Sendable {
         self.timeToReturn = timeToReturn
         self.senderSkin = senderSkin
         self.senderAccessories = senderAccessories
+        self.senderMount = senderMount
     }
 
     // Field-for-field identical to the compiler-synthesized decoder (same keys,
     // same `Date` decoding via the decoder's own strategy - the MultipeerConnectivity
     // path is unchanged), with added tolerances: `express`, `timeToReturn`,
-    // `senderSkin`, and `senderAccessories` are optional so a message from a
-    // build that predates any of them still loads.
+    // `senderSkin`, `senderAccessories`, and `senderMount` are optional so a
+    // message from a build that predates any of them still loads - and the
+    // last three decode via their raw strings, so a skin/accessory/mount a
+    // newer peer added reads as absent instead of failing the whole message.
+    // (`LanWireMessage` gets the same tolerance the same way.)
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -73,12 +81,13 @@ nonisolated struct PetMessage: Codable, Sendable {
         sentAt = try c.decode(Date.self, forKey: .sentAt)
         express = try c.decodeIfPresent(Bool.self, forKey: .express) ?? false
         timeToReturn = try c.decodeIfPresent(TimeInterval.self, forKey: .timeToReturn)
-        senderSkin = try c.decodeIfPresent(SkinId.self, forKey: .senderSkin)
-        senderAccessories = try c.decodeIfPresent([AccessoryId].self, forKey: .senderAccessories)
+        senderSkin = try c.decodeIfPresent(String.self, forKey: .senderSkin).flatMap(SkinId.init(rawValue:))
+        senderAccessories = try c.decodeIfPresent([String].self, forKey: .senderAccessories)?.compactMap(AccessoryId.init(rawValue:))
+        senderMount = try c.decodeIfPresent(String.self, forKey: .senderMount).flatMap(MountId.init(rawValue:))
     }
 
-    static func deliver(text: String, senderName: String, exitEdge: Edge, express: Bool = false, senderSkin: SkinId = .classic, senderAccessories: [AccessoryId] = []) -> PetMessage {
-        PetMessage(id: UUID(), kind: .deliver, text: text, senderName: senderName, exitEdge: exitEdge, sentAt: Date(), express: express, senderSkin: senderSkin, senderAccessories: senderAccessories)
+    static func deliver(text: String, senderName: String, exitEdge: Edge, express: Bool = false, senderSkin: SkinId = .classic, senderAccessories: [AccessoryId] = [], senderMount: MountId = .brownHorse) -> PetMessage {
+        PetMessage(id: UUID(), kind: .deliver, text: text, senderName: senderName, exitEdge: exitEdge, sentAt: Date(), express: express, senderSkin: senderSkin, senderAccessories: senderAccessories, senderMount: senderMount)
     }
 
     /// The ack for a given delivery - correlates by `id` so a stray/duplicate ack
@@ -88,6 +97,6 @@ nonisolated struct PetMessage: Codable, Sendable {
     /// of learning the acker's address. `timeToReturn` is how many more seconds
     /// the acker's own visitor animation needs, computed on the acker's screen.
     func makeAck(from localName: String, timeToReturn: TimeInterval) -> PetMessage {
-        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express, timeToReturn: timeToReturn, senderSkin: senderSkin, senderAccessories: senderAccessories)
+        PetMessage(id: id, kind: .ack, text: "", senderName: localName, exitEdge: exitEdge, sentAt: Date(), express: express, timeToReturn: timeToReturn, senderSkin: senderSkin, senderAccessories: senderAccessories, senderMount: senderMount)
     }
 }

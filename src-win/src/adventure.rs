@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::pet::brain::AnimState;
 use crate::pet::sprites::{
-    AccessoryId, SkinId, ACCESSORIES, HORSE_FRAMES, HORSE_FRAME_DURATION, PALETTE, SKINS,
+    AccessoryId, MountId, SkinId, ACCESSORIES, SKINS,
 };
 use crate::render::Canvas;
 
@@ -69,6 +69,17 @@ const HOLD_SECONDS: f64 = 1.6;
 /// 3x; eased to 2x here so the gallop still reads at this size).
 const EXPRESS_WALK_SECONDS: f64 = WALK_SECONDS / 2.0;
 
+/// Walk time for this run. `EXPRESS_WALK_SECONDS` is the horse's; a faster
+/// mount (the motorbike) shortens it in proportion to its `speed_mult`.
+fn walk_seconds(st: &AdventureState) -> f64 {
+    if st.express {
+        let horse = MountId::BrownHorse.def().speed_mult;
+        EXPRESS_WALK_SECONDS * horse / st.mount.def().speed_mult
+    } else {
+        WALK_SECONDS
+    }
+}
+
 /// The stone bridge as normalised (x, y) knots over the backdrop, y pointing
 /// down - eyeballed against `castle_bridge.jpg`. The pet follows this polyline
 /// from the first knot (just off the bottom edge) to the last (the castle
@@ -90,6 +101,7 @@ struct AdventureState {
     skin: SkinId,
     accessories: Vec<AccessoryId>,
     express: bool,
+    mount: MountId,
     /// Scratch frame: the backdrop copied in, sprites drawn over, then stretched
     /// to the window. Held across frames so it isn't reallocated every paint.
     scratch: Vec<u8>,
@@ -103,7 +115,7 @@ const ANIM_TIMER: usize = 1;
 
 /// Play the cutscene modally over `owner`. Returns when the pet has reached the
 /// castle and the hold has elapsed, or the user closed the window.
-pub fn present(owner: HWND, skin: SkinId, accessories: &HashSet<AccessoryId>, express: bool) {
+pub fn present(owner: HWND, skin: SkinId, accessories: &HashSet<AccessoryId>, express: bool, mount: MountId) {
     unsafe {
         let Ok(hinst) = GetModuleHandleW(None) else {
             return;
@@ -123,6 +135,7 @@ pub fn present(owner: HWND, skin: SkinId, accessories: &HashSet<AccessoryId>, ex
             skin,
             accessories: accessories.iter().copied().collect(),
             express,
+            mount,
             scratch: BG_BGRA.to_vec(),
             arrived_at: None,
             done: false,
@@ -184,7 +197,7 @@ pub fn present(owner: HWND, skin: SkinId, accessories: &HashSet<AccessoryId>, ex
 /// would hang with the owner window still disabled.
 fn advance(st: &mut AdventureState) -> bool {
     let now = st.start.elapsed().as_secs_f64();
-    let walk_secs = if st.express { EXPRESS_WALK_SECONDS } else { WALK_SECONDS };
+    let walk_secs = walk_seconds(st);
     if now / walk_secs >= 1.0 && st.arrived_at.is_none() {
         st.arrived_at = Some(now);
     }
@@ -223,7 +236,7 @@ fn render(st: &mut AdventureState) {
     // `arrived_at` / `done` are driven from `WM_TIMER` (`advance`), never here -
     // `WM_PAINT` can be skipped while the window is occluded. This only reads it.
     let t = st.start.elapsed().as_secs_f64();
-    let walk_secs = if st.express { EXPRESS_WALK_SECONDS } else { WALK_SECONDS };
+    let walk_secs = walk_seconds(st);
     let p = (t / walk_secs).min(1.0) as f32;
 
     st.scratch.copy_from_slice(BG_BGRA);
@@ -241,14 +254,15 @@ fn render(st: &mut AdventureState) {
     let mut pet_y = foot_y - pet_px;
 
     if st.express {
-        let frame = &HORSE_FRAMES[((t / HORSE_FRAME_DURATION) as usize) % HORSE_FRAMES.len()];
+        let mount = st.mount.def();
+        let frame = &mount.frames[((t / mount.frame_duration) as usize) % mount.frames.len()];
         let cols = frame.first().map(|r| r.len()).unwrap_or(0) as i32;
         let rows = frame.len() as i32;
         let hw = (cols as f32 * ZOOM as f32 * scale).round() as i32;
         let hh = (rows as f32 * ZOOM as f32 * scale).round() as i32;
         let hx = foot_x - hw / 2;
         let hy = foot_y - hh;
-        blit_grid_scaled(&mut canvas, frame, &PALETTE, hx, hy, hw, hh, flip);
+        blit_grid_scaled(&mut canvas, frame, &mount.palette, hx, hy, hw, hh, flip);
         pet_y -= (RIDER_LIFT as f32 * scale).round() as i32;
     }
 

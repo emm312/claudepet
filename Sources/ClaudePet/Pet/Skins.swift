@@ -6,7 +6,7 @@ import AppKit
 /// `PetMessage`s so a peer's chosen skin renders correctly on the receiving
 /// screen too (see `PetMessage.senderSkin`).
 enum SkinId: String, Codable, CaseIterable {
-    case classic, principal, clown, plant, sillyDuck, goose
+    case classic, principal, clown, plant, sillyDuck, goose, tennisBall
 
     var displayName: String {
         switch self {
@@ -16,6 +16,7 @@ enum SkinId: String, Codable, CaseIterable {
         case .plant: return "Potted Plant"
         case .sillyDuck: return "Silly Duck"
         case .goose: return "Silly Goose"
+        case .tennisBall: return "Tennis Ball"
         }
     }
 }
@@ -24,12 +25,13 @@ enum SkinId: String, Codable, CaseIterable {
 /// `PetState.accessoryIds` (a set - any combination can be worn at once) and
 /// carried on outbound `PetMessage`s the same way a skin choice is.
 enum AccessoryId: String, Codable, CaseIterable {
-    case topHat, glasses
+    case topHat, glasses, chefHat
 
     var displayName: String {
         switch self {
         case .topHat: return "Top Hat"
         case .glasses: return "Glasses"
+        case .chefHat: return "Chef Hat"
         }
     }
 }
@@ -66,6 +68,7 @@ enum Skins {
         .plant: buildPlant(),
         .sillyDuck: buildSillyDuck(),
         .goose: buildGoose(),
+        .tennisBall: buildTennisBall(),
     ]
 
     private static func blankGrid() -> [[UInt8]] {
@@ -313,12 +316,39 @@ enum Skins {
             )
         )
     }
+
+    /// An optic-yellow tennis ball: a flat recolor of the classic rig plus the
+    /// ball's two white seam curves facing each other - a "U" across the
+    /// forehead (rows 7-8) and an upturned "n" across the belly (rows 12-13).
+    /// Rows 9-11 are left alone because that's where the eyes land in some
+    /// pose or other (`fall*` puts them at cols 4/11, the jump frames shift
+    /// them). The seam is an `overlay` (recolors existing body pixels only,
+    /// see `buildSillyDuck`) so it never paints into a gap a pose leaves
+    /// empty. Mirrors `build_tennis_ball` in `src-win/src/pet/sprites.rs`.
+    private static func buildTennisBall() -> SkinDef {
+        let palette: [UInt8: NSColor] = [
+            1: NSColor(calibratedRed: 0.839, green: 0.91, blue: 0.243, alpha: 1),  // optic yellow-green felt
+            2: NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.078, alpha: 1), // eyes
+            3: NSColor(calibratedRed: 0.871, green: 0.667, blue: 0.196, alpha: 1), // angry tint
+            4: NSColor(calibratedRed: 0.965, green: 0.965, blue: 0.945, alpha: 1), // white seam
+        ]
+        let overlay: [(row: Int, col: Int, value: UInt8)] = [
+            // Forehead "U".
+            (7, 5, 4), (7, 10, 4),
+            (8, 6, 4), (8, 7, 4), (8, 8, 4), (8, 9, 4),
+            // Belly "n", mirroring it.
+            (12, 6, 4), (12, 7, 4), (12, 8, 4), (12, 9, 4),
+            (13, 5, 4), (13, 10, 4),
+        ]
+        return SkinDef(palette: palette, clips: transform(remapTable: [1: 1, 2: 2, 3: 3], topper: [], overlay: overlay))
+    }
 }
 
 enum Accessories {
     static let all: [AccessoryId: AccessoryDef] = [
         .topHat: buildTopHat(),
         .glasses: buildGlasses(),
+        .chefHat: buildChefHat(),
     ]
 
     private static func blankGrid() -> [[UInt8]] {
@@ -339,6 +369,35 @@ enum Accessories {
             palette: [
                 1: NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.078, alpha: 1), // black felt
                 2: NSColor(calibratedRed: 0.55, green: 0.106, blue: 0.106, alpha: 1),  // red band
+            ],
+            grid: g
+        )
+    }
+
+    /// A puffy white chef's toque: three rounded lobes on top, a straight
+    /// pleated crown, and a band on row 6 - flush on the hairline, the same
+    /// anchoring `buildTopHat` uses. Mirrors `build_chef_hat` in
+    /// `src-win/src/pet/sprites.rs`.
+    private static func buildChefHat() -> AccessoryDef {
+        let rows = [
+            "................",
+            "....11.11.11....", // lobe tops
+            "...1111111111...",
+            "...1112112111...", // lobe creases
+            "....11111111....",
+            "....12111121....", // pleats
+            "....22222222....", // band, flush on the hairline
+        ]
+        var g = blankGrid()
+        for (r, row) in rows.enumerated() {
+            for (c, ch) in row.enumerated() {
+                if let v = UInt8(String(ch)) { g[r][c] = v }
+            }
+        }
+        return AccessoryDef(
+            palette: [
+                1: NSColor(calibratedRed: 0.98, green: 0.98, blue: 0.965, alpha: 1),  // white cotton
+                2: NSColor(calibratedRed: 0.839, green: 0.839, blue: 0.816, alpha: 1), // creases + band
             ],
             grid: g
         )

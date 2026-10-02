@@ -398,6 +398,8 @@ private struct LanWireMessage: Codable {
     /// a pre-skins sender on either platform still decodes.
     let senderSkin: String?
     let senderAccessories: [String]?
+    /// See `PetMessage.senderMount`. Optional on the wire like `senderSkin`.
+    let senderMount: String?
 
     init(_ message: PetMessage) {
         id = message.id.uuidString.lowercased()
@@ -410,6 +412,7 @@ private struct LanWireMessage: Codable {
         timeToReturn = message.timeToReturn
         senderSkin = message.senderSkin?.rawValue
         senderAccessories = message.senderAccessories?.map { $0.rawValue }
+        senderMount = message.senderMount?.rawValue
     }
 
     func toPetMessage() -> PetMessage? {
@@ -427,7 +430,8 @@ private struct LanWireMessage: Codable {
             express: express,
             timeToReturn: timeToReturn,
             senderSkin: senderSkin.flatMap(SkinId.init(rawValue:)),
-            senderAccessories: senderAccessories?.compactMap(AccessoryId.init(rawValue:))
+            senderAccessories: senderAccessories?.compactMap(AccessoryId.init(rawValue:)),
+            senderMount: senderMount.flatMap(MountId.init(rawValue:))
         )
     }
 }

@@ -1,14 +1,15 @@
 //! A minimal native "customize pet" window: a ◀ ▶ pair to step through
-//! `SkinId::ALL` (wrapping) plus one checkbox per `AccessoryId`. Stands in for
+//! `SkinId::ALL` (wrapping), a second pair for the express `MountId`, plus one
+//! checkbox per `AccessoryId`. Stands in for
 //! `UI/CustomizeWindow.swift`. Built the same way `compose.rs` is (a plain
 //! Win32 popup, its own nested message loop, result collected into a struct
 //! behind `GWLP_USERDATA`) rather than duplicating the layered-window DIB
 //! pixel-preview machinery for a settings dialog - the label updates
 //! instantly on each ◀ ▶ click, and the change is applied to the real,
-//! persisted pet (`Runtime::set_skin`/`set_accessory`, visible on screen right
+//! persisted pet (`Runtime::set_skin`/`set_mount`/`set_accessory`, visible on screen right
 //! behind this window) the moment "Done" is clicked.
 
-use crate::pet::sprites::{AccessoryId, SkinId};
+use crate::pet::sprites::{AccessoryId, MountId, SkinId};
 use std::collections::HashSet;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -20,15 +21,19 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 struct CustomizeState {
     skin: SkinId,
     accessories: HashSet<AccessoryId>,
+    mount: MountId,
     skin_label: HWND,
+    mount_label: HWND,
     accessory_checkboxes: Vec<(AccessoryId, HWND)>,
-    result: Option<(SkinId, HashSet<AccessoryId>)>,
+    result: Option<(SkinId, HashSet<AccessoryId>, MountId)>,
     done: bool,
 }
 
 const ID_PREV: isize = 101;
 const ID_NEXT: isize = 102;
 const ID_DONE: isize = 103;
+const ID_MOUNT_PREV: isize = 104;
+const ID_MOUNT_NEXT: isize = 105;
 const ID_ACCESSORY_BASE: isize = 200;
 
 fn wide(s: &str) -> Vec<u16> {
@@ -38,7 +43,12 @@ fn wide(s: &str) -> Vec<u16> {
 /// Show the customize window modally relative to `owner`. Always returns the
 /// (possibly unchanged) selection - there's no discard/cancel concept since
 /// every ◀ ▶ click already updated the dialog's own live selection.
-pub fn present(owner: HWND, current_skin: SkinId, current_accessories: &HashSet<AccessoryId>) -> Option<(SkinId, HashSet<AccessoryId>)> {
+pub fn present(
+    owner: HWND,
+    current_skin: SkinId,
+    current_accessories: &HashSet<AccessoryId>,
+    current_mount: MountId,
+) -> Option<(SkinId, HashSet<AccessoryId>, MountId)> {
     unsafe {
         let hinst = GetModuleHandleW(None).ok()?;
         let class_name = w!("ClaudePetCustomizeClass");
@@ -56,13 +66,15 @@ pub fn present(owner: HWND, current_skin: SkinId, current_accessories: &HashSet<
         let mut st = Box::new(CustomizeState {
             skin: current_skin,
             accessories: current_accessories.clone(),
+            mount: current_mount,
             skin_label: HWND::default(),
+            mount_label: HWND::default(),
             accessory_checkboxes: Vec::new(),
             result: None,
             done: false,
         });
 
-        let (ww, wh) = (280i32, 90i32 + 24 * AccessoryId::ALL.len() as i32 + 40);
+        let (ww, wh) = (280i32, 126i32 + 24 * AccessoryId::ALL.len() as i32 + 40);
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
@@ -102,6 +114,22 @@ unsafe fn update_skin_label(st: &CustomizeState) {
     let _ = SetWindowTextW(st.skin_label, PCWSTR(label.as_ptr()));
 }
 
+fn mount_text(mount: MountId) -> String {
+    format!("Express: {}", mount.display_name())
+}
+
+unsafe fn update_mount_label(st: &CustomizeState) {
+    let label = wide(&mount_text(st.mount));
+    let _ = SetWindowTextW(st.mount_label, PCWSTR(label.as_ptr()));
+}
+
+/// Steps `current` by `delta` through `all`, wrapping at either end.
+fn step<T: Copy + PartialEq>(all: &[T], current: T, delta: isize) -> T {
+    let idx = all.iter().position(|x| *x == current).unwrap_or(0) as isize;
+    let n = all.len() as isize;
+    all[((idx + delta).rem_euclid(n)) as usize]
+}
+
 unsafe extern "system" fn customize_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
@@ -136,7 +164,31 @@ unsafe extern "system" fn customize_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 228, 16, 36, 28, hwnd, HMENU(ID_NEXT as *mut _), hinst, None,
             );
 
-            let mut y = 56i32;
+            // Second ◀ label ▶ row: the express mount.
+            let _ = CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                w!("\u{25c0}"),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                16, 52, 36, 28, hwnd, HMENU(ID_MOUNT_PREV as *mut _), hinst, None,
+            );
+            st.mount_label = CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                PCWSTR(wide(&mount_text(st.mount)).as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                60, 56, 160, 20, hwnd, None, hinst, None,
+            )
+            .unwrap_or_default();
+            let _ = CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                w!("\u{25b6}"),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                228, 52, 36, 28, hwnd, HMENU(ID_MOUNT_NEXT as *mut _), hinst, None,
+            );
+
+            let mut y = 92i32;
             for accessory in AccessoryId::ALL {
                 let cb = CreateWindowExW(
                     Default::default(),
@@ -168,18 +220,14 @@ unsafe extern "system" fn customize_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             }
             let st = &mut *st_ptr;
             match id {
-                ID_PREV => {
-                    let all = SkinId::ALL;
-                    let idx = all.iter().position(|s| *s == st.skin).unwrap_or(0);
-                    st.skin = all[(idx + all.len() - 1) % all.len()];
+                ID_PREV | ID_NEXT => {
+                    st.skin = step(&SkinId::ALL, st.skin, if id == ID_PREV { -1 } else { 1 });
                     update_skin_label(st);
                     LRESULT(0)
                 }
-                ID_NEXT => {
-                    let all = SkinId::ALL;
-                    let idx = all.iter().position(|s| *s == st.skin).unwrap_or(0);
-                    st.skin = all[(idx + 1) % all.len()];
-                    update_skin_label(st);
+                ID_MOUNT_PREV | ID_MOUNT_NEXT => {
+                    st.mount = step(&MountId::ALL, st.mount, if id == ID_MOUNT_PREV { -1 } else { 1 });
+                    update_mount_label(st);
                     LRESULT(0)
                 }
                 ID_DONE => {
@@ -189,7 +237,7 @@ unsafe extern "system" fn customize_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                         .filter(|(_, cb)| SendMessageW(*cb, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1)
                         .map(|(id, _)| *id)
                         .collect();
-                    st.result = Some((st.skin, accessories));
+                    st.result = Some((st.skin, accessories, st.mount));
                     st.done = true;
                     LRESULT(0)
                 }

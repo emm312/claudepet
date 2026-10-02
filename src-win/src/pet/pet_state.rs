@@ -1,7 +1,7 @@
 //! Persisted stat block for the pet + its JSON store.
 //! Mirrors `Sources/ClaudePet/Pet/PetState.swift`.
 
-use crate::pet::sprites::{AccessoryId, SkinId};
+use crate::pet::sprites::{AccessoryId, MountId, SkinId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -65,6 +65,9 @@ pub struct PetState {
     pub skin: SkinId,
     #[serde(default)]
     pub accessories: HashSet<AccessoryId>,
+    /// The express mount (`MountId::BrownHorse` for a pre-mounts `state.json`).
+    #[serde(default)]
+    pub mount: MountId,
 }
 
 fn default_true() -> bool {
@@ -84,6 +87,7 @@ impl Default for PetState {
             auto_update: true,
             skin: SkinId::default(),
             accessories: HashSet::new(),
+            mount: MountId::default(),
         }
     }
 }
@@ -224,6 +228,7 @@ mod tests {
             auto_update: true,
             skin: SkinId::default(),
             accessories: HashSet::new(),
+            mount: MountId::default(),
         }
     }
 

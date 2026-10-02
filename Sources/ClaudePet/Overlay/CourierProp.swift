@@ -30,6 +30,9 @@ final class CourierProp {
         window.orderFrontRegardless()
     }
 
+    /// On-screen width in points (every frame shares the first's size).
+    var width: Int { frames[0].width }
+
     /// `origin` is the window's bottom-left corner in screen coordinates.
     /// `dt` advances the gallop cycle when there's more than one frame; pass
     /// `0` for a single-frame (static) prop like the mail.

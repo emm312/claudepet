@@ -29,13 +29,14 @@ final class AdventureWindow: NSWindow {
     /// owner uses this to drop its retaining reference.
     var onClose: (() -> Void)?
 
-    init(skin: SkinId, accessories: [AccessoryId], express: Bool) {
+    init(skin: SkinId, accessories: [AccessoryId], express: Bool, mount: MountId = .brownHorse) {
         let side = Self.sceneSize * Self.windowScale
         sceneView = AdventureSceneView(
             frame: CGRect(x: 0, y: 0, width: side, height: side),
             skin: skin,
             accessories: accessories,
-            express: express
+            express: express,
+            mount: mount
         )
         super.init(
             contentRect: CGRect(x: 0, y: 0, width: side, height: side),
@@ -104,6 +105,7 @@ private final class AdventureSceneView: NSView {
     private let skin: SkinId
     private let accessories: [AccessoryId]
     private let express: Bool
+    private let mount: MountId
     private let backdrop: CGImage?
 
     private var startDate = Date()
@@ -111,10 +113,11 @@ private final class AdventureSceneView: NSView {
     private var arrivedAt: TimeInterval?
     var onFinished: (() -> Void)?
 
-    init(frame: CGRect, skin: SkinId, accessories: [AccessoryId], express: Bool) {
+    init(frame: CGRect, skin: SkinId, accessories: [AccessoryId], express: Bool, mount: MountId) {
         self.skin = skin
         self.accessories = accessories
         self.express = express
+        self.mount = mount
         self.backdrop = Self.loadBackdrop()
         super.init(frame: frame)
         wantsLayer = true
@@ -140,10 +143,14 @@ private final class AdventureSceneView: NSView {
         timer = nil
     }
 
-    /// Seconds to cross the whole bridge (express arrives in half the time -
-    /// `adventure.rs`'s `EXPRESS_WALK_SECONDS`).
+    /// Seconds to cross the whole bridge. Express on a horse arrives in half
+    /// the time (`adventure.rs`'s `EXPRESS_WALK_SECONDS`); a faster mount
+    /// shortens that in proportion to its speed (`adventure.rs`'s
+    /// `walk_seconds`).
     private var walkSeconds: TimeInterval {
-        express ? AdventureWindow.walkSeconds / 2 : AdventureWindow.walkSeconds
+        guard express else { return AdventureWindow.walkSeconds }
+        let horse = MountId.brownHorse.speedMultiplier
+        return AdventureWindow.walkSeconds / 2 * Double(horse / mount.speedMultiplier)
     }
 
     private func tick() {
@@ -188,9 +195,9 @@ private final class AdventureSceneView: NSView {
         var petOriginY = footY - petPx
 
         if express {
-            let frames = HorseSprite.frames
-            let idx = Int(t / HorseSprite.frameDuration) % max(1, frames.count)
-            let hw = CGFloat(22 * Self.petZoom) * scale
+            let frames = MountSprite.frames(for: mount)
+            let idx = Int(t / MountSprite.frameDuration(for: mount)) % max(1, frames.count)
+            let hw = CGFloat((MountSprite.grids(for: mount).first?.first?.count ?? 22) * Self.petZoom) * scale
             let hh = CGFloat(12 * Self.petZoom) * scale
             let rect = CGRect(x: footX - hw / 2, y: footY - hh, width: hw, height: hh)
             drawImage(frames[idx], in: rect, flippedHorizontally: !facingRight)

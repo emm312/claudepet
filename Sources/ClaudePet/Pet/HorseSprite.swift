@@ -42,11 +42,15 @@ enum HorseSprite {
 
     /// Rendered at the same zoom as the pet's own sprites (`Runtime`'s `zoom`)
     /// so the horse reads at a consistent pixel scale next to it.
-    static let frames: [CGImage] = [frame1, frame2].map { PixelArtRenderer.render(grid: $0, zoom: 5) }
+    static let frames: [CGImage] = grids.map { PixelArtRenderer.render(grid: $0, zoom: 5) }
+
+    /// The raw gallop grids, palette indices 4 (hide) and 5 (mane/tail/hooves)
+    /// - `MountSprite` recolors these for the white/black horses.
+    static let grids: [[[UInt8]]] = [frame1, frame2]
     static let frameDuration: TimeInterval = 1.0 / 12.0 // brisk gallop cadence
 
     /// How far above its normal ground position a rider sits while on the
-    /// horse's back - tuned to this sprite's proportions (the back line is row
+    /// horse's back (shared by every mount - see `MountSprite.riderLift`) - tuned to this sprite's proportions (the back line is row
     /// 6 of 12, above the legs) so the pet reads as sitting on top of the
     /// horse rather than overlapping it at the same height.
     static let riderLift: CGFloat = 28

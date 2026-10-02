@@ -12,8 +12,8 @@ messaging interop, which has grown since this branch was cut. On this branch the
 carries `Sources/ClaudePet/Net/LanUdpLink.swift` and `Net/CompositeTransport.swift`; `Runtime.swift`
 uses them (`CompositeTransport([MultipeerLink(), LanUdpLink()])`); `Net/PetMessage.swift` gains an
 optional-decoded `express` field so the horse/express flag survives the round trip;
-`Overlay/CourierProp.swift` + `Pet/HorseSprite.swift` + `Pet/MailSprite.swift` add the horse/mail
-rendering (see below); and `Runtime.swift` + `Overlay/OverlayView.swift` + `Pet/Courier.swift` + `UI/StatusItem.swift` carry
+`Overlay/CourierProp.swift` + `Pet/HorseSprite.swift` + `Pet/MountSprite.swift` + `Pet/MailSprite.swift`
+add the mount/mail rendering (see below); and `Runtime.swift` + `Overlay/OverlayView.swift` + `Pet/Courier.swift` + `UI/StatusItem.swift` carry
 the click-to-open received-letter UX that matches the Windows port (see "Receiving a letter" under
 Networking — no auto-opening reader, mail in the pet's hand, `handoffDuration` 0.5s, a "Read Letter…"
 item on the pet's right-click menu and the status item). `Tests/ClaudePetTests/CourierTests.swift`
@@ -51,14 +51,32 @@ switched to hand-authored pixel grids in the same style as the pet's own sprites
   `runtime.rs`) since the poll-based render loop has no dedicated animation-frame state to thread
   through.
 
+**Mounts — selectable express ride, cosmetic + speed.** The express courier rides a `MountId`
+(`BrownHorse` default, `WhiteHorse`, `BlackHorse`, `Motorbike`), picked in the Customize window's
+second ◀ ▶ row and persisted as `PetState::mount` / `PetState.mountId` (defaulted, so an older
+`state.json` reads as the brown horse). `pet/sprites.rs`'s `MOUNTS` table / Swift's `MountSprite`
+hold each mount's palette, 2-frame cycle, and speed: the three horses reuse `HORSE_FRAMES` /
+`HorseSprite.grids` with only palette indices 4/5 swapped, at 3x; the motorbike is its own 28-column
+grid (wider than the horse's 22 so the fork/headlight/fender/exhaust clear the rider, who covers the
+middle) with a spoke-spin cycle, at **4x** (`MountDef::speed_mult` / `MountId.speedMultiplier` —
+keep these in sync). Every mount is 12 rows tall, so the one shared rider lift
+(`HORSE_RIDER_LIFT` / `MountSprite.riderLift`) still keeps hooves and wheels on the ground. The
+mount travels on the wire as `senderMount`; the outbound trip snapshots its mount at trip start
+(`outbound_mount` / `outboundMount`) so changing mounts mid-trip doesn't swap it, and the visitor,
+its speed, **and** the acker's `timeToReturn` all use the delivering message's `senderMount`
+(`runtime::trip_speed_mult` / `Courier`'s `mount:` parameter), so the ack-timing contract holds.
+In Swift a `CourierProp`'s frames are fixed at init, so `Runtime.mountProp` rebuilds the prop
+whenever the mount differs from the one it was built for.
+
 ## Adventure cutscene ("Watch the journey")
 
 The compose window's third checkbox (below "express") — `ID_ADVENTURE` in `compose.rs`,
 `adventureCheckbox` in `LetterWindow.swift`. When it's ticked, the message sends as normal **and
 then** a small self-closing window plays a cutscene: the pet walks a stone bridge up to a castle,
 holds ~1.6s at the gate, and the window closes itself. If the send was also express, the pet
-gallops in on the horse (`HORSE_FRAMES`, same 2-frame cycle as the courier) and arrives in half the
-time. Nothing about this touches the wire — `PetMessage` is unchanged and the `net::tests::wire_contract_*`
+rides in on its chosen mount (same frames and palette as the courier) and arrives in half the time
+on a horse, or proportionally faster on a quicker mount (`adventure.rs::walk_seconds` /
+`AdventureSceneView.walkSeconds`: half time × horse speed ÷ mount speed). Nothing about this touches the wire — `PetMessage` is unchanged and the `net::tests::wire_contract_*`
 byte-string test is unaffected; the checkbox result is a 4th `bool` on the compose tuple
 (`compose::present` → `(text, peers, express, adventure)`; `LetterWindow.runModal()` likewise) that
 the caller acts on locally after `send_message`.
@@ -132,8 +150,9 @@ logic. Unlike the Windows port (one composited canvas via `main::draw_actor`), e
 own small window, since this app draws every pet/visitor as a separate `OverlayWindow` — positions
 approximate, not pixel-identical to, the Rust placement math. `LetterWindow`/`MessageComposer` carry
 the express checkbox (`compose.rs`'s Mac-side counterpart) so both directions can send/receive
-express; the express speed multiplier is 3x on both platforms (`Courier.expressSpeedMultiplier` /
-`src-win/src/runtime.rs`'s `EXPRESS_SPEED_MULT` — keep these in sync if either changes).
+express; the express speed multiplier is per mount, 3x for the horses and 4x for the motorbike, on
+both platforms (`MountId.speedMultiplier`, which uses `Courier.expressSpeedMultiplier` for horses /
+`src-win/src/pet/sprites.rs`'s `MOUNTS` `speed_mult` — keep these in sync if either changes).
 
 **Not yet compiled**: the click-to-open received-letter changes to `Overlay/OverlayView.swift` and
 `UI/StatusItem.swift`, and the whole adventure-cutscene carve-out (`UI/AdventureWindow.swift`,
@@ -150,6 +169,15 @@ runner produced no output) - so `swift test` passing is still unverified. Run it
 before relying on macOS↔Windows messaging. The Windows (Rust) side of the ack-timing rework is
 `cargo build --target x86_64-pc-windows-gnu` clean but likewise unexecuted (no Windows runtime to run
 the cross-compiled `.exe` against) - `cargo test` on a real Windows box is still the source of truth.
+
+The mounts / Tennis Ball / Chef Hat change (0.5.0) was made on a Mac: `swift build` and
+`swift build --build-tests` are clean, but `swift test` again ran silently (same sandbox limitation),
+so the new Swift tests (`SpritesTests` mount/seam, `PetMessageTests` `senderMount`/unknown-value,
+`CourierTests` motorbike) are compiled, not executed. On the Rust side the app and test binary build
+clean for `x86_64-pc-windows-gnu`. Every pure `pet/` + `net/` test (47, including the new
+sprite/wire ones) *was* run natively, by `#[path]`-including those two modules into a throwaway
+host crate. The `runtime.rs` integration tests (Win32 geometry) are compile-only until
+`cargo test` runs on Windows.
 
 ---
 
@@ -237,23 +265,31 @@ datagrams to the peer's advertised address:port. Peer identity is the advertised
 **macOS ↔ Windows messaging** works via the same link: the macOS app on this branch runs
 `CompositeTransport([MultipeerLink(), LanUdpLink()])`, where `LanUdpLink` speaks the identical
 Bonjour type (`_claudepet._udp`) and JSON shape. Wire format (both sides): a flat object
-`{ id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn }` — `id` a lowercase dashed
-UUID, `kind` `"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds, `express` a
+`{ id, kind, text, senderName, exitEdge, sentAt, express, timeToReturn, senderSkin, senderAccessories,
+senderMount }` — `id` a lowercase dashed UUID, `kind` `"deliver"`/`"ack"`, `exitEdge` `"left"`/`"right"`, `sentAt` Unix seconds, `express` a
 bool (optional — omitted reads as `false`). `timeToReturn` is `.ack`-only: how many more seconds the
 acker's own visitor animation (arriving → handing → leaving) needs, computed on the acker's screen at
 the moment it received the delivery, so the sender's courier can wait exactly that long instead of
 turning around the instant the ack lands (`Courier.receivedAck`/`received_ack`'s `wait` parameter) —
 optional, and a missing value (older peer, or on a `.deliver`) falls back to `Courier.defaultWait`/
-`courier::DEFAULT_WAIT` (2s). The Rust `net::tests::wire_contract_*` test pins the exact byte string.
+`courier::DEFAULT_WAIT` (2s). `senderSkin`/`senderAccessories`/`senderMount` (camelCase enum raw
+values, all optional) carry the sender's look and express mount. Both sides decode those three
+**leniently**: a value this build doesn't know yet (a skin/mount a newer peer added) reads as absent,
+or is dropped from the accessories list, instead of failing the whole message (Rust:
+`net::lenient`/`lenient_list` via `deserialize_with`; Swift: decode the raw `String` and
+`flatMap(init(rawValue:))`, in both `PetMessage.init(from:)` and `LanWireMessage`). Pre-0.5.0 Windows
+builds still use a strict derive and **drop** a message carrying an unknown value, so a newer skin
+won't reach them until they auto-update. The Rust `net::tests::wire_contract_*` test pins the exact byte string.
 Mac↔Mac still rides MultipeerConnectivity; `CompositeTransport` de-dups deliveries by `id` so a peer
 reachable on both links isn't served twice.
 
-**Courier props** (`src-win/src/pet/sprites.rs`'s `HORSE_FRAMES`/`MAIL_GRID` - pixel grids, not baked
-JPEGs; see the horse/mail section above): the resident pet holds the mail on every courier leg it
-walks; an **express** send (compose checkbox, or `express: true` on the wire) makes it ride the horse
-at `EXPRESS_SPEED_MULT` × courier speed. The receiving screen's visitor pet always holds the mail and
-rides the horse when the delivery was express. `FrameSprite.carry_mail` / `.on_horse` /
-`.horse_frame` drive `main::draw_actor` (horse under → pet → mail over).
+**Courier props** (`src-win/src/pet/sprites.rs`'s `MOUNTS`/`MAIL_GRID` - pixel grids, not baked
+JPEGs; see the horse/mail and mounts sections above): the resident pet holds the mail on every courier
+leg it walks; an **express** send (compose checkbox, or `express: true` on the wire) makes it ride its
+chosen mount at that mount's `speed_mult` × courier speed. The receiving screen's visitor pet always
+holds the mail and rides the sender's mount (`senderMount`) when the delivery was express.
+`FrameSprite.carry_mail` / `.on_horse` / `.mount` / `.horse_frame` drive `main::draw_actor` (mount
+under → pet → mail over).
 
 **Receiving a letter — same UX on both platforms.** A delivered letter no longer pops a reader open
 (the mac app used to, `dc69ae9`). The inbound visitor does a short "touch and go" handoff
@@ -287,7 +323,7 @@ tray / right-click menu (shown only when one's waiting) is the same path.
 From `src-win/`:
 
 ```
-cargo test                       # pure-logic + runtime unit tests (57)
+cargo test                       # pure-logic + runtime unit tests (65)
 cargo run                        # debug run of the pet
 cargo build --release            # → target/release/claudepet.exe  (single file, no runtime deps)
 CLAUDEPET_PEER_NAME=DeskA cargo run   # second instance for local messaging tests

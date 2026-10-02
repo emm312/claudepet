@@ -89,12 +89,18 @@ final class Runtime {
     /// Express (horse) delivery - only meaningful while `outboundCourier` is
     /// active. windows-branch feature; see HorseSprite.swift/MailSprite.swift.
     private var outboundExpress = false
+    /// Which mount the in-flight express trip rides - snapshotted from the
+    /// message at trip start, so changing mounts mid-trip doesn't swap it.
+    private var outboundMount: MountId = .brownHorse
     /// The resident window's true ground height, captured when a delivery
     /// starts - while riding express, the window is visually lifted above
-    /// this by `HorseSprite.riderLift` so the pet sits on the horse's back;
+    /// this by `MountSprite.riderLift` so the pet sits on the horse's back;
     /// restored the moment the courier finishes so gravity resumes correctly.
     private var outboundGroundY: CGFloat = 0
     private var horseProp: CourierProp?
+    /// The mount `horseProp` was built for - a prop is only reused for the
+    /// same mount (see `mountProp`).
+    private var horsePropMount: MountId?
     private var mailProp: CourierProp?
 
     /// Active while a visitor's sprite is walking through a handoff.
@@ -112,11 +118,12 @@ final class Runtime {
     /// The visitor's true ground height, captured once at spawn.
     private var visitorGroundY: CGFloat = 0
     /// The visitor's actual vertical position (mirrors `VisitorPet`'s own
-    /// `y`) - equal to `visitorGroundY`, or lifted by `HorseSprite.riderLift`
+    /// `y`) - equal to `visitorGroundY`, or lifted by `MountSprite.riderLift`
     /// for the whole trip when the delivery is express, so it sits on the
     /// horse's back rather than overlapping it at the same height.
     private var visitorBaseY: CGFloat = 0
     private var visitorHorseProp: CourierProp?
+    private var visitorHorsePropMount: MountId?
     private var visitorMailProp: CourierProp?
 
     /// Deliveries that arrived while another was already playing out, so they
@@ -266,7 +273,7 @@ final class Runtime {
             // Non-modal: the window animates on its own timer and closes itself
             // when the pet reaches the castle. Mirrors src-win/src/adventure.rs
             // (which is modal there - see AdventureWindow's note).
-            let window = AdventureWindow(skin: state.skinId, accessories: Array(state.accessoryIds), express: express)
+            let window = AdventureWindow(skin: state.skinId, accessories: Array(state.accessoryIds), express: express, mount: state.mountId)
             window.onClose = { [weak self] in self?.adventureWindow = nil }
             adventureWindow = window
             window.run()
@@ -317,7 +324,7 @@ final class Runtime {
     /// is empty.
     func sendMessage(_ text: String, to peers: [String], express: Bool = false) {
         guard !peers.isEmpty else { return }
-        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: outboundExitEdge(), express: express, senderSkin: state.skinId, senderAccessories: Array(state.accessoryIds))
+        let message = PetMessage.deliver(text: text, senderName: MultipeerLink.localDisplayName, exitEdge: outboundExitEdge(), express: express, senderSkin: state.skinId, senderAccessories: Array(state.accessoryIds), senderMount: state.mountId)
         outboundQueue.append((message, peers))
         startNextOutboundIfIdle()
     }
@@ -348,11 +355,13 @@ final class Runtime {
         outboundPendingPeers = Set(peers)
         outboundAckedPeers = []
         outboundExpress = message.express
+        outboundMount = message.senderMount ?? .brownHorse
         outboundGroundY = window.frame.origin.y
         outboundWasAway = false
-        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: message.express)
+        outboundCourier = Courier.outbound(startX: homeX, homeX: homeX, offScreenX: offScreenX, edge: edge, express: message.express, mount: outboundMount)
         brain.setFalling(false)
-        showBubble(force: message.express ? "saddling up - taking this one express" : Dialogue.departLine())
+        let expressLine = outboundMount == .motorbike ? "revving up - taking this one express" : "saddling up - taking this one express"
+        showBubble(force: message.express ? expressLine : Dialogue.departLine())
     }
 
     private func handleReceived(_ message: PetMessage, from peerName: String) {
@@ -371,7 +380,7 @@ final class Runtime {
             // (computed on this screen) so its courier can wait for it instead
             // of turning around the instant the ack lands.
             let (_, offScreenX, handoffX) = inboundGeometry(for: message)
-            let timeToReturn = Courier.estimateRoundTripDuration(oneWayDistance: offScreenX - handoffX, express: message.express)
+            let timeToReturn = Courier.estimateRoundTripDuration(oneWayDistance: offScreenX - handoffX, express: message.express, mount: message.senderMount ?? .brownHorse)
             transport.send(message.makeAck(from: MultipeerLink.localDisplayName, timeToReturn: timeToReturn), to: peerName)
             pendingDeliveries.append(message)
             startNextDeliveryIfIdle()
@@ -406,12 +415,12 @@ final class Runtime {
         let (entryEdge, offScreenX, handoffX) = inboundGeometry(for: message)
 
         visitorGroundY = window.frame.origin.y
-        visitorBaseY = visitorGroundY + (message.express ? HorseSprite.riderLift : 0)
+        visitorBaseY = visitorGroundY + (message.express ? MountSprite.riderLift : 0)
         let visitor = VisitorPet(zoom: zoom, y: visitorBaseY, skinId: message.senderSkin ?? .classic, accessoryIds: message.senderAccessories ?? [])
         visitor.setX(offScreenX)
         self.visitor = visitor
         inboundHandedOff = false
-        inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge, express: message.express)
+        inboundCourier = Courier.inbound(offScreenX: offScreenX, handoffX: handoffX, edge: entryEdge, express: message.express, mount: message.senderMount ?? .brownHorse)
     }
 
     /// Advances any active couriers/visitor by one tick. Returns whether the
@@ -437,7 +446,7 @@ final class Runtime {
                 }
                 var origin = window.frame.origin
                 origin.x = courier.x
-                origin.y = outboundExpress ? outboundGroundY + HorseSprite.riderLift : outboundGroundY
+                origin.y = outboundExpress ? outboundGroundY + MountSprite.riderLift : outboundGroundY
                 window.setFrameOrigin(origin)
                 suppressLocalMovement = true
             case .away:
@@ -483,7 +492,7 @@ final class Runtime {
             courier.tick(now: now)
             visitor.setX(courier.x)
             visitor.render(anim: courier.anim, facingRight: courier.facingRight, dt: dt)
-            updateVisitorProps(x: courier.x, express: courier.express, facingRight: courier.facingRight, dt: dt)
+            updateVisitorProps(x: courier.x, express: courier.express, mount: courier.mount, facingRight: courier.facingRight, dt: dt)
             if courier.phase == .done {
                 // The ack itself was already sent the moment the delivery
                 // arrived (`handleReceived`) - the visitor's walk/handoff is
@@ -518,11 +527,10 @@ final class Runtime {
     private func updateResidentProps(origin: CGPoint, facingRight: Bool, dt: TimeInterval) {
         let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
         if outboundExpress {
-            let prop = horseProp ?? CourierProp(frames: HorseSprite.frames, frameDuration: HorseSprite.frameDuration)
-            horseProp = prop
-            let w = CGFloat(HorseSprite.frames[0].width)
+            let prop = Self.mountProp(&horseProp, builtFor: &horsePropMount, mount: outboundMount)
+            let w = CGFloat(prop.width)
             // Ground level, not `origin.y` - the pet's window is already
-            // lifted by `HorseSprite.riderLift` while riding (see
+            // lifted by `MountSprite.riderLift` while riding (see
             // `tickMessaging`), and the horse itself should stay planted.
             prop.setOrigin(CGPoint(x: origin.x + spriteSize / 2 - w / 2, y: outboundGroundY), flippedHorizontally: !facingRight, dt: dt)
         } else if let prop = horseProp {
@@ -535,6 +543,17 @@ final class Runtime {
         let mailW = CGFloat(MailSprite.image.width)
         let mailX = facingRight ? origin.x + spriteSize - mailW - 4 : origin.x + 4
         mailProp.setOrigin(CGPoint(x: mailX, y: origin.y + 22), flippedHorizontally: !facingRight)
+    }
+
+    /// Reuses `prop` if it was built for `mount`, else dismisses it and
+    /// builds a fresh one - a `CourierProp`'s frames are fixed at init.
+    private static func mountProp(_ prop: inout CourierProp?, builtFor: inout MountId?, mount: MountId) -> CourierProp {
+        if let existing = prop, builtFor == mount { return existing }
+        prop?.dismiss()
+        let fresh = CourierProp(frames: MountSprite.frames(for: mount), frameDuration: MountSprite.frameDuration(for: mount))
+        prop = fresh
+        builtFor = mount
+        return fresh
     }
 
     private func hideResidentProps() {
@@ -555,17 +574,17 @@ final class Runtime {
         prop.setOrigin(CGPoint(x: mailX, y: origin.y + 22), flippedHorizontally: !facingRight)
     }
 
-    /// A visitor always carries the mail; it rides the horse only when the
-    /// delivery it's carrying was sent express (`courier.express`, threaded
-    /// from `PetMessage.express` in `startNextDeliveryIfIdle`).
-    private func updateVisitorProps(x: CGFloat, express: Bool, facingRight: Bool, dt: TimeInterval) {
+    /// A visitor always carries the mail; it rides a mount only when the
+    /// delivery it's carrying was sent express (`courier.express`/`.mount`,
+    /// threaded from `PetMessage.express`/`.senderMount` in
+    /// `startNextDeliveryIfIdle`).
+    private func updateVisitorProps(x: CGFloat, express: Bool, mount: MountId, facingRight: Bool, dt: TimeInterval) {
         let spriteSize = PetSprites.gridSize.width * CGFloat(zoom)
         if express {
-            let prop = visitorHorseProp ?? CourierProp(frames: HorseSprite.frames, frameDuration: HorseSprite.frameDuration)
-            visitorHorseProp = prop
-            let w = CGFloat(HorseSprite.frames[0].width)
+            let prop = Self.mountProp(&visitorHorseProp, builtFor: &visitorHorsePropMount, mount: mount)
+            let w = CGFloat(prop.width)
             // Ground level, not `visitorBaseY` - the visitor's own window is
-            // already lifted by `HorseSprite.riderLift` while riding (see
+            // already lifted by `MountSprite.riderLift` while riding (see
             // `startNextDeliveryIfIdle`), and the horse should stay planted.
             prop.setOrigin(CGPoint(x: x + spriteSize / 2 - w / 2, y: visitorGroundY), flippedHorizontally: !facingRight, dt: dt)
         } else if let prop = visitorHorseProp {
@@ -845,6 +864,14 @@ final class Runtime {
 
     var skinId: SkinId { state.skinId }
     var accessoryIds: Set<AccessoryId> { state.accessoryIds }
+    var mountId: MountId { state.mountId }
+
+    /// Takes effect from the next send - an express trip already in flight
+    /// keeps the mount it left on (`outboundMount`).
+    func setMount(_ id: MountId) {
+        state.mountId = id
+        persistSoon()
+    }
 
     /// Applies immediately (persists + re-renders the current frame), mirroring
     /// `setAutoUpdatesEnabled` - no separate "apply" step needed.

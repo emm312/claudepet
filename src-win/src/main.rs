@@ -420,12 +420,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // re-enters this wndproc via WM_TIMER), so nothing may hold
                     // `&mut App` across the call. `modal_open` keeps a tray
                     // "Read Letter…" from stacking another modal on top.
-                    let (skin, accessories) = {
+                    let (skin, accessories, mount) = {
                         let app = &mut *app_ptr;
-                        (app.runtime.skin(), app.runtime.accessories().clone())
+                        (app.runtime.skin(), app.runtime.accessories().clone(), app.runtime.mount())
                     };
                     (*app_ptr).modal_open = true;
-                    adventure::present(hwnd, skin, &accessories, express);
+                    adventure::present(hwnd, skin, &accessories, express, mount);
                     (*app_ptr).modal_open = false;
                 }
             }
@@ -435,13 +435,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_APP_CUSTOMIZE => {
             // Same defer-then-reborrow shape as WM_APP_COMPOSE: don't hold
             // `&mut App` across customize::present's own nested message pump.
-            let (skin, accessories) = {
+            let (skin, accessories, mount) = {
                 let app = &mut *app_ptr;
-                (app.runtime.skin(), app.runtime.accessories().clone())
+                (app.runtime.skin(), app.runtime.accessories().clone(), app.runtime.mount())
             };
-            if let Some((new_skin, new_accessories)) = customize::present(hwnd, skin, &accessories) {
+            if let Some((new_skin, new_accessories, new_mount)) = customize::present(hwnd, skin, &accessories, mount) {
                 let app = &mut *app_ptr;
                 app.runtime.set_skin(new_skin);
+                app.runtime.set_mount(new_mount);
                 for id in crate::pet::sprites::AccessoryId::ALL {
                     app.runtime.set_accessory(id, new_accessories.contains(&id));
                 }
@@ -512,10 +513,10 @@ unsafe fn show_menu(app_ptr: *mut App, hwnd: HWND) {
     );
 }
 
-/// Draw one courier actor: horse (under, if express) → pet sprite → mail (over,
-/// if carrying). Mirrors for a left-facing actor. The horse/mail are pixel
-/// grids in the pet's own style (`pet::sprites::HORSE_FRAMES`/`MAIL_GRID`),
-/// drawn at the same `ZOOM` as the pet.
+/// Draw one courier actor: mount (under, if express) → pet sprite → mail (over,
+/// if carrying). Mirrors for a left-facing actor. The mount/mail are pixel
+/// grids in the pet's own style (`pet::sprites::MOUNTS`/`MAIL_GRID`), drawn
+/// at the same `ZOOM` as the pet.
 fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     let sprite_px = runtime::SPRITE_PX;
     let flip = !s.facing_right;
@@ -524,13 +525,14 @@ fn draw_actor(canvas: &mut render::Canvas, s: &runtime::FrameSprite) {
     let pet_y = if s.on_horse { s.y - runtime::HORSE_RIDER_LIFT } else { s.y };
 
     if s.on_horse {
-        let frame = &sprites::HORSE_FRAMES[s.horse_frame % sprites::HORSE_FRAMES.len()];
-        let hw = sprites::HORSE_GRID_COLS as i32 * ZOOM;
+        let mount = s.mount.def();
+        let frame = &mount.frames[s.horse_frame % mount.frames.len()];
+        let hw = mount.cols as i32 * ZOOM;
         let hx = s.x + sprite_px / 2 - hw / 2;
         let hy = pet_y + sprite_px / 2 - 4;
         // No edge clamp here: `Canvas::put` clips every pixel, and clamping only
         // the horse would let the rider slide off it near the screen bottom.
-        canvas.blit_grid(frame, &sprites::PALETTE, ZOOM, hx, hy, flip);
+        canvas.blit_grid(frame, &mount.palette, ZOOM, hx, hy, flip);
     }
 
     // The actor's own chosen skin (`s.skin`, resolved from `PetState::skin` for

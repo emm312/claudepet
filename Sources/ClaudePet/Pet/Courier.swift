@@ -25,10 +25,12 @@ final class Courier {
     private(set) var phase: Phase
     let role: Role
     let edge: PetMessage.Edge
-    /// Express (horse) delivery - the courier moves at `expressSpeedMultiplier`
-    /// times the normal pace. Purely a speed/rendering flag; the state machine
-    /// itself is unchanged.
+    /// Express delivery - the courier rides `mount` at its
+    /// `MountId.speedMultiplier` times the normal pace (`expressSpeedMultiplier`
+    /// for a horse). Purely a speed/rendering flag; the state machine itself
+    /// is unchanged.
     let express: Bool
+    let mount: MountId
 
     private(set) var x: CGFloat
     private(set) var facingRight = true
@@ -57,8 +59,13 @@ final class Courier {
     private var pendingWait: TimeInterval = 0
 
     private static let speed: CGFloat = 90 // pt/s - brisker than the normal idle walk
+    /// The horse's pace - every horse mount uses it; see `MountId.speedMultiplier`.
     static let expressSpeedMultiplier: CGFloat = 3.0
-    private var effectiveSpeed: CGFloat { express ? Self.speed * Self.expressSpeedMultiplier : Self.speed }
+    private var effectiveSpeed: CGFloat { Self.effectiveSpeed(express: express, mount: mount) }
+
+    private static func effectiveSpeed(express: Bool, mount: MountId) -> CGFloat {
+        express ? speed * mount.speedMultiplier : speed
+    }
     /// How long the inbound visitor pauses beside the resident pet to pass the
     /// letter. Was 2.2s so the message could be shown during the handoff; now
     /// the resident pet keeps the letter and it's opened on demand (see
@@ -82,12 +89,12 @@ final class Courier {
     /// How long a courier's `.arriving -> .handing -> .leaving` leg takes to
     /// play out on the receiving screen, given the one-way arrival distance
     /// (== the leaving distance, since both run between the same off-screen
-    /// point and handoff point) and whether it's express (horse). The
+    /// point and handoff point) and whether it's express (on which mount). The
     /// receiver computes this for its own screen and hands it back on the
     /// ack, so the sender's `.away` phase can wait exactly that long instead
     /// of guessing. Matches `estimate_round_trip_duration` in the Windows port.
-    static func estimateRoundTripDuration(oneWayDistance: CGFloat, express: Bool) -> TimeInterval {
-        let effective = express ? speed * expressSpeedMultiplier : speed
+    static func estimateRoundTripDuration(oneWayDistance: CGFloat, express: Bool, mount: MountId = .brownHorse) -> TimeInterval {
+        let effective = effectiveSpeed(express: express, mount: mount)
         return 2 * Double(abs(oneWayDistance) / effective) + handoffDuration
     }
 
@@ -109,15 +116,15 @@ final class Courier {
     /// simultaneously in flight and the pet's live position is mid-transit.
     var restingX: CGFloat { homeX }
 
-    static func outbound(startX: CGFloat, homeX: CGFloat, offScreenX: CGFloat, edge: PetMessage.Edge, express: Bool = false, now: Date = Date()) -> Courier {
-        Courier(role: .outbound, phase: .departing, edge: edge, x: startX, offScreenX: offScreenX, homeX: homeX, handoffX: homeX, express: express, now: now)
+    static func outbound(startX: CGFloat, homeX: CGFloat, offScreenX: CGFloat, edge: PetMessage.Edge, express: Bool = false, mount: MountId = .brownHorse, now: Date = Date()) -> Courier {
+        Courier(role: .outbound, phase: .departing, edge: edge, x: startX, offScreenX: offScreenX, homeX: homeX, handoffX: homeX, express: express, mount: mount, now: now)
     }
 
-    static func inbound(offScreenX: CGFloat, handoffX: CGFloat, edge: PetMessage.Edge, express: Bool = false, now: Date = Date()) -> Courier {
-        Courier(role: .inbound, phase: .arriving, edge: edge, x: offScreenX, offScreenX: offScreenX, homeX: handoffX, handoffX: handoffX, express: express, now: now)
+    static func inbound(offScreenX: CGFloat, handoffX: CGFloat, edge: PetMessage.Edge, express: Bool = false, mount: MountId = .brownHorse, now: Date = Date()) -> Courier {
+        Courier(role: .inbound, phase: .arriving, edge: edge, x: offScreenX, offScreenX: offScreenX, homeX: handoffX, handoffX: handoffX, express: express, mount: mount, now: now)
     }
 
-    private init(role: Role, phase: Phase, edge: PetMessage.Edge, x: CGFloat, offScreenX: CGFloat, homeX: CGFloat, handoffX: CGFloat, express: Bool, now: Date) {
+    private init(role: Role, phase: Phase, edge: PetMessage.Edge, x: CGFloat, offScreenX: CGFloat, homeX: CGFloat, handoffX: CGFloat, express: Bool, mount: MountId, now: Date) {
         self.role = role
         self.phase = phase
         self.edge = edge
@@ -126,6 +133,7 @@ final class Courier {
         self.homeX = homeX
         self.handoffX = handoffX
         self.express = express
+        self.mount = mount
         lastTickDate = now
         if role == .outbound {
             awayDeadline = now.addingTimeInterval(Self.awayTimeout)

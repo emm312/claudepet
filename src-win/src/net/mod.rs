@@ -8,8 +8,9 @@
 
 pub mod mdns_udp;
 
-use crate::pet::sprites::{AccessoryId, SkinId};
-use serde::{Deserialize, Serialize};
+use crate::pet::sprites::{AccessoryId, MountId, SkinId};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Which edge of the sender's screen the pet exited through. The receiver spawns
 /// its visitor on the opposite edge so the trip reads as continuous.
@@ -83,10 +84,35 @@ pub struct PetMessage {
     /// renders with their own look while visiting rather than always showing
     /// classic. Optional on the wire so a pre-skins sender on either platform
     /// still decodes (the receiver then falls back to classic/no-accessories).
-    #[serde(rename = "senderSkin", default, skip_serializing_if = "Option::is_none")]
+    /// Decoded leniently (see `lenient`): a skin/accessory this build doesn't
+    /// know yet reads as absent instead of failing the whole message.
+    #[serde(rename = "senderSkin", default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub sender_skin: Option<SkinId>,
-    #[serde(rename = "senderAccessories", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "senderAccessories", default, deserialize_with = "lenient_list", skip_serializing_if = "Option::is_none")]
     pub sender_accessories: Option<Vec<AccessoryId>>,
+    /// The sender's express mount, so the receiving visitor arrives on it -
+    /// and at its speed, which also feeds the acker's `time_to_return`.
+    /// Optional on the wire like `sender_skin` (a pre-mounts sender reads as
+    /// the brown horse) and decoded just as leniently.
+    #[serde(rename = "senderMount", default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub sender_mount: Option<MountId>,
+}
+
+/// Decodes an optional enum field, mapping a value this build doesn't
+/// recognise (a skin/mount added by a newer peer) to `None`. A derived
+/// `Deserialize` would reject the whole `PetMessage`, silently dropping the
+/// delivery. Swift's `LanWireMessage` gets the same tolerance from
+/// `flatMap(SkinId.init(rawValue:))`.
+fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// `lenient` for a list: drops just the unrecognised entries, like Swift's
+/// `compactMap(AccessoryId.init(rawValue:))`.
+fn lenient_list<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Option<Vec<T>>, D::Error> {
+    let values = Option::<Vec<serde_json::Value>>::deserialize(d)?;
+    Ok(values.map(|vs| vs.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect()))
 }
 
 impl PetMessage {
@@ -97,6 +123,7 @@ impl PetMessage {
         express: bool,
         sender_skin: SkinId,
         sender_accessories: Vec<AccessoryId>,
+        sender_mount: MountId,
     ) -> PetMessage {
         PetMessage {
             id: random_id(),
@@ -110,6 +137,7 @@ impl PetMessage {
             time_to_return: None,
             sender_skin: Some(sender_skin),
             sender_accessories: Some(sender_accessories),
+            sender_mount: Some(sender_mount),
         }
     }
 
@@ -133,6 +161,7 @@ impl PetMessage {
             time_to_return: Some(time_to_return),
             sender_skin: self.sender_skin,
             sender_accessories: self.sender_accessories.clone(),
+            sender_mount: self.sender_mount,
         }
     }
 }
@@ -203,7 +232,7 @@ mod tests {
 
     #[test]
     fn ack_preserves_id_and_clears_text() {
-        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false, SkinId::default(), Vec::new());
+        let m = PetMessage::deliver("hi there".into(), "DeskA".into(), Edge::Right, false, SkinId::default(), Vec::new(), crate::pet::sprites::MountId::default());
         let ack = m.make_ack("DeskB", 1.5);
         assert_eq!(ack.id, m.id);
         assert_eq!(ack.kind, Kind::Ack);
@@ -215,7 +244,7 @@ mod tests {
 
     #[test]
     fn ack_carries_forward_the_original_senders_skin() {
-        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Clown, vec![AccessoryId::Glasses]);
+        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Clown, vec![AccessoryId::Glasses], crate::pet::sprites::MountId::default());
         let ack = m.make_ack("DeskB", 1.5);
         assert_eq!(ack.sender_skin, Some(SkinId::Clown));
         assert_eq!(ack.sender_accessories, Some(vec![AccessoryId::Glasses]));
@@ -223,7 +252,7 @@ mod tests {
 
     #[test]
     fn sender_skin_and_accessories_round_trip_through_json() {
-        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Plant, vec![AccessoryId::TopHat, AccessoryId::Glasses]);
+        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, false, SkinId::Plant, vec![AccessoryId::TopHat, AccessoryId::Glasses], crate::pet::sprites::MountId::default());
         let json = serde_json::to_string(&m).unwrap();
         let back: PetMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sender_skin, Some(SkinId::Plant));
@@ -231,8 +260,33 @@ mod tests {
     }
 
     #[test]
+    fn sender_mount_round_trips_and_is_carried_onto_the_ack() {
+        let m = PetMessage::deliver("hi".into(), "DeskA".into(), Edge::Right, true, SkinId::TennisBall, vec![AccessoryId::ChefHat], MountId::Motorbike);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"senderMount\":\"motorbike\""));
+        assert!(json.contains("\"senderSkin\":\"tennisBall\""));
+        let back: PetMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sender_mount, Some(MountId::Motorbike));
+        assert_eq!(back.sender_skin, Some(SkinId::TennisBall));
+        assert_eq!(back.sender_accessories, Some(vec![AccessoryId::ChefHat]));
+        assert_eq!(back.make_ack("DeskB", 1.0).sender_mount, Some(MountId::Motorbike));
+    }
+
+    /// A newer peer's skin/mount/accessory this build doesn't know must not
+    /// drop the whole delivery - it just reads as absent.
+    #[test]
+    fn unknown_skin_mount_and_accessories_still_decode() {
+        let json = r#"{"id":"7f3a1c2b-4d5e-4a7b-8c9d-0e1f2a3b4c5d","kind":"deliver","text":"hi","senderName":"DeskMac","exitEdge":"left","sentAt":1.0,"express":true,"senderSkin":"spaceCat","senderAccessories":["glasses","monocle"],"senderMount":"hoverboard"}"#;
+        let m: PetMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(m.text, "hi");
+        assert_eq!(m.sender_skin, None);
+        assert_eq!(m.sender_mount, None);
+        assert_eq!(m.sender_accessories, Some(vec![AccessoryId::Glasses]));
+    }
+
+    #[test]
     fn json_round_trips_with_swift_field_names() {
-        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left, false, SkinId::default(), Vec::new());
+        let m = PetMessage::deliver("ship it".into(), "DeskB".into(), Edge::Left, false, SkinId::default(), Vec::new(), crate::pet::sprites::MountId::default());
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"senderName\":\"DeskB\""));
         assert!(json.contains("\"exitEdge\":\"left\""));
@@ -275,6 +329,7 @@ mod tests {
             time_to_return: None,
             sender_skin: None,
             sender_accessories: None,
+            sender_mount: None,
         };
         assert_eq!(serde_json::to_string(&same).unwrap(), json);
 

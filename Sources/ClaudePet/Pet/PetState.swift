@@ -29,9 +29,11 @@ struct PetState: Codable {
     /// still decode as `.classic` / no accessories rather than failing.
     var skinId: SkinId = .classic
     var accessoryIds: Set<AccessoryId> = []
+    /// The express mount; `.brownHorse` for a state.json saved before mounts.
+    var mountId: MountId = .brownHorse
 
     private enum CodingKeys: String, CodingKey {
-        case hunger, energy, happiness, cleanliness, birthDate, lastTick, autoUpdatesEnabled, skinId, accessoryIds
+        case hunger, energy, happiness, cleanliness, birthDate, lastTick, autoUpdatesEnabled, skinId, accessoryIds, mountId
     }
 
     init() {}
@@ -47,6 +49,7 @@ struct PetState: Codable {
         autoUpdatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdatesEnabled) ?? true
         skinId = try container.decodeIfPresent(SkinId.self, forKey: .skinId) ?? .classic
         accessoryIds = try container.decodeIfPresent(Set<AccessoryId>.self, forKey: .accessoryIds) ?? []
+        mountId = try container.decodeIfPresent(MountId.self, forKey: .mountId) ?? .brownHorse
     }
 
     /// Per-hour decay rates. Tuned so the pet needs light daily attention but
